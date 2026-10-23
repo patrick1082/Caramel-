@@ -1,10 +1,49 @@
+import sqlite3
 from dataclasses import replace
-from datetime import date
+from datetime import UTC, date, datetime, timedelta, timezone
+from decimal import Decimal
 
 import pytest
 
-from predictor.modelos import Estado, Movimiento, TipoMovimiento
-from predictor.repositorio import Repositorio
+from predictor.modelos import (
+    Cuota,
+    Deporte,
+    Estado,
+    Mercado,
+    Movimiento,
+    Partido,
+    ResultadoHistorico,
+    TipoMovimiento,
+)
+from predictor.repositorio import _ESQUEMA_V1, Repositorio
+
+AHORA = datetime(2026, 10, 24, 12, 0, tzinfo=UTC)
+
+
+def _partido(id_="p1", liga="Premier League", inicio=AHORA, **cambios) -> Partido:
+    datos = {
+        "id": id_,
+        "deporte": Deporte.NBA if liga == "NBA" else Deporte.FUTBOL,
+        "liga": liga,
+        "local": "Arsenal",
+        "visitante": "Everton",
+        "inicio": inicio,
+    }
+    datos.update(cambios)
+    return Partido(**datos)
+
+
+def _cuota(partido_id="p1", **cambios) -> Cuota:
+    datos = {
+        "partido_id": partido_id,
+        "casa": "pinnacle",
+        "mercado": Mercado.GANADOR,
+        "seleccion": "Arsenal",
+        "cuota": Decimal("1.55"),
+        "actualizada": AHORA,
+    }
+    datos.update(cambios)
+    return Cuota(**datos)
 
 
 def test_agregar_asigna_id_y_conserva_todos_los_campos(repo, crear_apuesta):
@@ -86,3 +125,87 @@ def test_datos_persisten_al_reabrir_archivo(tmp_path, crear_apuesta):
     assert reabierto.listar_apuestas() == [guardada]
     assert reabierto.obtener_config("fondo_inicial") == "15000"
     reabierto.cerrar()
+
+
+def test_migra_base_v1_sin_perder_apuestas(tmp_path, crear_apuesta):
+    ruta = tmp_path / "v1.db"
+    con = sqlite3.connect(ruta)
+    con.executescript(_ESQUEMA_V1)
+    con.execute(
+        "INSERT INTO apuestas (fecha_registro, fecha_evento, deporte, liga, partido, mercado, "
+        "seleccion, cuota, monto, casa, colocada, prediccion_propia, estado, resultado_neto, "
+        "nota) VALUES ('2026-10-01T10:00:00', '2026-10-02', 'NBA', 'NBA', 'A vs B', 'Ganador', "
+        "'A', '1.9', 1000, 'Betano', 1, '', 'pendiente', NULL, '')"
+    )
+    con.commit()
+    con.close()
+
+    repo = Repositorio(ruta)
+
+    assert [a.partido for a in repo.listar_apuestas()] == ["A vs B"]
+    assert repo._con.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert repo.listar_partidos(AHORA, AHORA + timedelta(days=1)) == []
+    repo.cerrar()
+
+
+def test_cartelera_ida_y_vuelta_en_utc(repo):
+    chile = timezone(timedelta(hours=-3))
+    partido = _partido(inicio=datetime(2026, 10, 24, 9, 0, tzinfo=chile))
+    cuotas = [
+        _cuota(),
+        _cuota(mercado=Mercado.TOTALES, seleccion="Over", linea=Decimal("2.5"), cuota="1.9"),
+    ]
+
+    repo.reemplazar_cartelera("Premier League", [partido], cuotas)
+
+    [leido] = repo.listar_partidos(AHORA - timedelta(hours=1), AHORA + timedelta(hours=1))
+    assert leido == replace(partido, inicio=AHORA)
+    assert sorted(repo.cuotas_de("p1"), key=lambda c: c.mercado) == sorted(
+        cuotas, key=lambda c: c.mercado
+    )
+
+
+def test_reemplazar_cartelera_solo_afecta_a_esa_liga(repo):
+    repo.reemplazar_cartelera("Premier League", [_partido("p1")], [_cuota("p1")])
+    repo.reemplazar_cartelera(
+        "NBA", [_partido("n1", liga="NBA", local="Bulls", visitante="Bucks")], [_cuota("n1")]
+    )
+
+    repo.reemplazar_cartelera("Premier League", [_partido("p2")], [])
+
+    ids = [p.id for p in repo.listar_partidos(AHORA, AHORA + timedelta(minutes=1))]
+    assert ids == ["n1", "p2"]
+    assert repo.cuotas_de("p1") == []
+    assert len(repo.cuotas_de("n1")) == 1
+
+
+def test_listar_partidos_filtra_por_rango_y_liga(repo):
+    repo.reemplazar_cartelera(
+        "Premier League",
+        [_partido("tarde", inicio=AHORA + timedelta(hours=5)), _partido("ahora")],
+        [],
+    )
+    repo.reemplazar_cartelera("NBA", [_partido("nba", liga="NBA")], [])
+
+    rango = (AHORA, AHORA + timedelta(hours=5))
+    assert [p.id for p in repo.listar_partidos(*rango)] == ["nba", "ahora"]  # fin excluido
+    assert [p.id for p in repo.listar_partidos(*rango, ligas=["NBA"])] == ["nba"]
+    assert repo.listar_partidos(*rango, ligas=[]) == []
+
+
+def test_historial_reemplaza_la_temporada(repo):
+    def resultado(fecha, temporada="2627", **extras):
+        return ResultadoHistorico(
+            "Premier League", temporada, fecha, "Arsenal", "Everton", 2, 1, extras
+        )
+
+    repo.guardar_historial("Premier League", "2526", [resultado(date(2026, 3, 1), "2526")])
+    repo.guardar_historial("Premier League", "2627", [resultado(date(2026, 9, 1))])
+    nuevo = resultado(date(2026, 9, 8), tiros=(12.0, 7.0))
+
+    repo.guardar_historial("Premier League", "2627", [nuevo, resultado(date(2026, 9, 1))])
+
+    historial = repo.historial_de("Premier League")
+    assert [r.fecha for r in historial] == [date(2026, 3, 1), date(2026, 9, 1), date(2026, 9, 8)]
+    assert historial[-1] == nuevo
+    assert repo.historial_de("NBA") == []

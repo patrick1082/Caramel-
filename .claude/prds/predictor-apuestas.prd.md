@@ -47,19 +47,19 @@ We'll know we're right when **el ROI de las apuestas filtradas por la app supera
 | # | Milestone | Outcome | Status | Plan |
 |---|---|---|---|---|
 | 1 | Bitácora y fondo | El usuario registra apuestas, ve balances totales y exporta a Excel | complete | `.claude/plans/bitacora-y-fondo.plan.md` |
-| 2 | Partidos y cuotas | El usuario consulta partidos próximos (NBA + 5 ligas) con cuotas de Betano y proveedores de comparación | pending | — |
+| 2 | Partidos y cuotas | El usuario consulta partidos próximos (NBA + 5 ligas) con cuotas de Betano y proveedores de comparación | complete | `.claude/plans/partidos-y-cuotas.plan.md` |
 | 3 | Predicción IA | Cada partido muestra predicción con puntos/goles, jugadores y factores clave | pending | — |
 | 4 | Contraste y valor | El usuario ve su predicción vs. IA vs. pronósticos web, con apuestas de valor marcadas | pending | — |
 | 5 | Gestión de stake | La app sugiere % de billetera por apuesta y lo registra en la bitácora | pending | — |
 
 ## Open Questions
 - [x] Formato de la app: app web local en Python + Streamlit.
-- [ ] Fuentes de datos de partidos, estadísticas y lesiones: ¿gratuitas o de pago? ¿Presupuesto mensual?
-- [ ] Acceso a cuotas de Betano y Stake: ¿existe un medio permitido por sus términos de servicio?
+- [x] Fuentes de partidos y estadísticas: gratuitas (The Odds API 500 créditos/mes, football-data.co.uk, nba_api). Lesiones: pendiente para el hito 3.
+- [x] Acceso a cuotas: vía The Odds API (sin scraping). Betano Chile no está disponible; se usa Betano UK como aproximación y Pinnacle en lugar de Stake.
 - [ ] ¿Qué webs de pronósticos se usarán para el contraste?
 - [x] Moneda del fondo de 10.000: CLP.
 - [ ] Criterio para sugerir % de billetera (conservador vs. agresivo) y límites máximos por apuesta/día.
-- [ ] Mercados a cubrir: ganador, hándicap, over/under, props de jugadores.
+- [x] Mercados a cubrir: ganador, hándicap y over/under. Props de jugadores fuera del plan gratuito.
 - [ ] Umbral para considerar una cuota "con valor".
 
 ## Risks

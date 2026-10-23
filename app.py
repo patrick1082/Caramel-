@@ -1,17 +1,28 @@
-"""Bitácora de apuestas: interfaz Streamlit. Ejecutar con `streamlit run app.py`."""
+"""Predictor de apuestas: interfaz Streamlit. Ejecutar con `streamlit run app.py`."""
 
 from __future__ import annotations
 
 import os
 from collections.abc import Callable
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 
 import streamlit as st
 
 from predictor.bitacora import Bitacora
-from predictor.exportar import exportar_excel, tabla_apuestas, tabla_metricas, tabla_movimientos
+from predictor.cartelera import Cartelera
+from predictor.exportar import (
+    exportar_excel,
+    tabla_apuestas,
+    tabla_cara_a_cara,
+    tabla_cuotas,
+    tabla_estadisticas,
+    tabla_metricas,
+    tabla_movimientos,
+)
+from predictor.fuentes.odds_api import ClienteOddsApi, costo_creditos
+from predictor.ligas import ZONA_CHILE
 from predictor.modelos import LIGAS, Apuesta, Deporte, Estado, Movimiento, TipoMovimiento
 from predictor.repositorio import Repositorio
 
@@ -19,9 +30,20 @@ RUTA_BD = Path(os.environ.get("PREDICTOR_DB", "data/bitacora.db"))
 
 
 @st.cache_resource
-def obtener_bitacora() -> Bitacora:
+def obtener_repositorio() -> Repositorio:
     RUTA_BD.parent.mkdir(parents=True, exist_ok=True)
-    return Bitacora(Repositorio(RUTA_BD))
+    return Repositorio(RUTA_BD)
+
+
+@st.cache_resource
+def obtener_bitacora() -> Bitacora:
+    return Bitacora(obtener_repositorio())
+
+
+@st.cache_resource
+def obtener_cartelera() -> Cartelera:
+    clave = os.environ.get("ODDS_API_KEY", "").strip()
+    return Cartelera(obtener_repositorio(), ClienteOddsApi(clave) if clave else None)
 
 
 def clp(monto: int) -> str:
@@ -48,8 +70,20 @@ def registrar(bitacora: Bitacora, **datos) -> None:
     bitacora.registrar_apuesta(Apuesta(**datos))
 
 
-st.set_page_config(page_title="Bitácora de apuestas", page_icon="📒", layout="wide")
+def actualizar(cartelera: Cartelera, ligas: list[str]) -> None:
+    with st.spinner("Descargando cuotas e historial…"):
+        if cartelera.tiene_clave:
+            cartelera.actualizar_cuotas(ligas)
+        cartelera.actualizar_historial(ligas)
+
+
+def hora_chile(momento: datetime) -> str:
+    return f"{momento.astimezone(ZONA_CHILE):%H:%M}"
+
+
+st.set_page_config(page_title="Predictor de apuestas", page_icon="📒", layout="wide")
 bitacora = obtener_bitacora()
+cartelera = obtener_cartelera()
 apuestas = bitacora.apuestas()
 movimientos = bitacora.movimientos()
 resumen = bitacora.resumen()
@@ -65,10 +99,83 @@ with st.sidebar:
         width="stretch",
     )
 
-st.title("📒 Bitácora de apuestas")
-tab_resumen, tab_nueva, tab_pendientes, tab_historial, tab_movimientos, tab_config = st.tabs(
-    ["Resumen", "Nueva apuesta", "Pendientes", "Historial", "Movimientos", "Configuración"]
+st.title("📒 Predictor de apuestas")
+(
+    tab_partidos,
+    tab_resumen,
+    tab_nueva,
+    tab_pendientes,
+    tab_historial,
+    tab_movimientos,
+    tab_config,
+) = st.tabs(
+    [
+        "Partidos",
+        "Resumen",
+        "Nueva apuesta",
+        "Pendientes",
+        "Historial",
+        "Movimientos",
+        "Configuración",
+    ]
 )
+
+with tab_partidos:
+    col1, col2, col3, col4 = st.columns([1, 2, 1, 2])
+    dia = col1.date_input("Día", value=datetime.now(ZONA_CHILE).date(), key="dia_partidos")
+    desde_hora, hasta_hora = col2.slider("Hora de inicio (Chile)", 0, 24, (0, 24))
+    deportes_partidos = col3.multiselect(
+        "Deporte", list(Deporte), default=list(Deporte), format_func=str
+    )
+    opciones_ligas = [liga for d in deportes_partidos for liga in LIGAS[d]]
+    ligas = col4.multiselect("Ligas", opciones_ligas, default=opciones_ligas)
+
+    vencidas = cartelera.ligas_por_actualizar(ligas)
+    col1, col2, col3 = st.columns([1, 1, 2])
+    creditos = cartelera.creditos_restantes
+    col1.metric("Créditos The Odds API", "—" if creditos is None else creditos)
+    costo = costo_creditos(len(vencidas)) if cartelera.tiene_clave else 0
+    if col2.button(f"Actualizar ({costo} créditos)", disabled=not ligas, type="primary"):
+        ejecutar("Partidos actualizados", actualizar, cartelera, ligas)
+    actualizadas = [m for liga in ligas if (m := cartelera.cuotas_actualizadas(liga))]
+    if actualizadas:
+        col3.caption(
+            f"Cuotas consultadas por última vez a las {hora_chile(min(actualizadas))} "
+            f"({len(vencidas)} de {len(ligas)} ligas con más de 1 hora)"
+        )
+    if not cartelera.tiene_clave:
+        st.warning(
+            "Falta la clave de The Odds API: define la variable de entorno ODDS_API_KEY y "
+            "reinicia la app. Mientras tanto se muestran las cuotas ya guardadas y el "
+            "botón solo descarga el historial."
+        )
+
+    partidos = cartelera.partidos(dia, desde_hora, hasta_hora, ligas) if ligas else []
+    if not partidos:
+        st.info("No hay partidos guardados para este filtro. Prueba con Actualizar.")
+    ahora = datetime.now(UTC)
+    for partido in partidos:
+        etiqueta = f"{hora_chile(partido.inicio)} · {partido.liga} · {partido.nombre}"
+        if partido.inicio <= ahora:
+            etiqueta += " · en curso"
+        with st.expander(etiqueta):
+            filas = cartelera.comparar(partido)
+            if filas:
+                st.dataframe(tabla_cuotas(filas), hide_index=True, width="stretch")
+            else:
+                st.caption("Sin cuotas para este partido.")
+            analisis = cartelera.analizar(partido)
+            st.markdown("**Forma reciente** (propio / rival, promedio de los últimos 10)")
+            st.dataframe(
+                tabla_estadisticas(analisis, partido.local, partido.visitante),
+                hide_index=True,
+                width="stretch",
+            )
+            if analisis.cara_a_cara:
+                st.markdown("**Enfrentamientos directos**")
+                st.dataframe(
+                    tabla_cara_a_cara(analisis.cara_a_cara), hide_index=True, width="stretch"
+                )
 
 with tab_resumen:
     capital = resumen.fondo_inicial + resumen.depositos - resumen.retiros
@@ -221,3 +328,5 @@ with tab_config:
         if st.form_submit_button("Guardar"):
             ejecutar("Fondo inicial actualizado", bitacora.fijar_fondo_inicial, int(fondo))
     st.caption(f"Base de datos: `{RUTA_BD.resolve()}` (cámbiala con la variable PREDICTOR_DB)")
+    estado_clave = "configurada" if cartelera.tiene_clave else "no configurada"
+    st.caption(f"Clave de The Odds API (variable ODDS_API_KEY): {estado_clave}")

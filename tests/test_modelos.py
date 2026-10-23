@@ -1,8 +1,19 @@
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
 
-from predictor.modelos import Deporte, Estado, Movimiento, TipoMovimiento
+from predictor.ligas import temporadas
+from predictor.modelos import (
+    Cuota,
+    Deporte,
+    Estado,
+    Mercado,
+    Movimiento,
+    Partido,
+    ResultadoHistorico,
+    TipoMovimiento,
+)
 
 
 def test_apuesta_valida_con_valores_por_defecto(crear_apuesta):
@@ -93,3 +104,62 @@ def test_movimiento_rechaza_monto_no_positivo():
 def test_movimiento_rechaza_tipo_desconocido():
     with pytest.raises(ValueError):
         Movimiento(tipo="transferencia", monto=100)
+
+
+def _partido(**cambios):
+    datos = {
+        "id": "x1",
+        "deporte": Deporte.FUTBOL,
+        "liga": "LaLiga",
+        "local": "Real Madrid",
+        "visitante": "Barcelona",
+        "inicio": datetime(2026, 10, 26, 15, 0, tzinfo=UTC),
+    }
+    datos.update(cambios)
+    return Partido(**datos)
+
+
+def test_partido_valido_y_nombre():
+    assert _partido().nombre == "Real Madrid vs Barcelona"
+
+
+@pytest.mark.parametrize(
+    ("cambios", "mensaje"),
+    [
+        ({"liga": "NBA"}, "no corresponde"),
+        ({"local": " "}, "'local' es obligatorio"),
+        ({"inicio": datetime(2026, 10, 26, 15, 0)}, "zona horaria"),
+    ],
+)
+def test_partido_invalido(cambios, mensaje):
+    with pytest.raises(ValueError, match=mensaje):
+        _partido(**cambios)
+
+
+def test_cuota_convierte_tipos_y_valida():
+    cuota = Cuota("x1", "pinnacle", "totals", "Over", 1.9, datetime.now(UTC), linea=2.5)
+
+    assert cuota.mercado is Mercado.TOTALES
+    assert (cuota.cuota, cuota.linea) == (Decimal("1.9"), Decimal("2.5"))
+    assert Mercado.HANDICAP.etiqueta == "Hándicap"
+    with pytest.raises(ValueError, match="mayor a 1.00"):
+        Cuota("x1", "pinnacle", "h2h", "Draw", "1", datetime.now(UTC))
+
+
+def test_resultado_historico_no_admite_marcador_negativo():
+    with pytest.raises(ValueError, match="negativo"):
+        ResultadoHistorico("NBA", "2026-27", date(2026, 10, 22), "A", "B", -1, 100)
+
+
+@pytest.mark.parametrize(
+    ("deporte", "hoy", "esperado"),
+    [
+        (Deporte.FUTBOL, date(2026, 10, 23), ("2627", "2526")),
+        (Deporte.FUTBOL, date(2027, 5, 1), ("2627", "2526")),
+        (Deporte.FUTBOL, date(2099, 8, 1), ("9900", "9899")),
+        (Deporte.NBA, date(2026, 10, 23), ("2026-27", "2025-26")),
+        (Deporte.NBA, date(2026, 9, 30), ("2025-26", "2024-25")),
+    ],
+)
+def test_temporadas(deporte, hoy, esperado):
+    assert temporadas(deporte, hoy) == esperado

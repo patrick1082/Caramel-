@@ -1,4 +1,4 @@
-"""Tablas de la bitácora y exportación a Excel."""
+"""Tablas de la bitácora y de la cartelera, y exportación a Excel."""
 
 from __future__ import annotations
 
@@ -7,7 +7,9 @@ from io import BytesIO
 import pandas as pd
 
 from predictor.bitacora import Metricas, Resumen
-from predictor.modelos import Apuesta, Movimiento
+from predictor.cartelera import Analisis, FilaComparacion
+from predictor.estadisticas import Estadisticas, Promedios
+from predictor.modelos import Apuesta, Mercado, Movimiento, ResultadoHistorico
 
 COLUMNAS_APUESTAS = {
     "id": "N°",
@@ -48,6 +50,31 @@ COLUMNAS_METRICAS = (
     "ROI (%)",
     "Acierto (%)",
 )
+
+COLUMNAS_CUOTAS = (
+    "Mercado",
+    "Selección",
+    "Línea",
+    "Betano",
+    "Pinnacle",
+    "Mejor",
+    "Casa mejor",
+    "Promedio",
+    "Casas",
+)
+
+ETIQUETAS_EXTRAS = {
+    "tiros": "Tiros",
+    "tiros_al_arco": "Tiros al arco",
+    "xg": "xG",
+    "corners": "Córners",
+    "amarillas": "Amarillas",
+    "rebotes": "Rebotes",
+    "asistencias": "Asistencias",
+    "triples": "Triples",
+    "pct_tiro": "% de tiro",
+    "perdidas": "Pérdidas",
+}
 
 
 def _porcentaje(valor: float | None) -> float | None:
@@ -136,6 +163,89 @@ def tabla_resumen(resumen: Resumen) -> pd.DataFrame:
         ("ROI hipotético no colocadas (%)", _porcentaje(no_colocadas.roi)),
     ]
     return pd.DataFrame(filas, columns=["Concepto", "Valor"])
+
+
+def _cuota(valor) -> float | None:
+    return None if valor is None else float(valor)
+
+
+def _linea(fila: FilaComparacion) -> str:
+    if fila.linea is None:
+        return ""
+    return f"{fila.linea:+g}" if fila.mercado is Mercado.HANDICAP else f"{fila.linea:g}"
+
+
+def tabla_cuotas(filas: list[FilaComparacion]) -> pd.DataFrame:
+    datos = [
+        (
+            f.mercado.etiqueta,
+            "Empate" if f.seleccion == "Draw" else f.seleccion,
+            _linea(f),
+            _cuota(f.betano),
+            _cuota(f.pinnacle),
+            float(f.mejor),
+            f.casa_mejor,
+            float(f.promedio),
+            f.casas,
+        )
+        for f in filas
+    ]
+    return pd.DataFrame(datos, columns=COLUMNAS_CUOTAS)
+
+
+def _par(promedios: Promedios | None) -> str:
+    if promedios is None:
+        return "—"
+    return f"{promedios.a_favor:g} / {promedios.en_contra:g} ({promedios.jugados} PJ)"
+
+
+def _columna(stats: Estadisticas | None, extras: list[str]) -> list[str]:
+    if stats is None:
+        return ["Sin datos"] + [""] * (4 + len(extras))
+    return [
+        str(stats.jugados),
+        f"{stats.ganados}-{stats.empatados}-{stats.perdidos}",
+        stats.forma,
+        _par(stats.ultimos),
+        f"{_par(stats.de_local)} · {_par(stats.de_visita)}",
+    ] + [
+        "{:g} / {:g}".format(*stats.extras[nombre]) if nombre in stats.extras else "—"
+        for nombre in extras
+    ]
+
+
+def tabla_estadisticas(analisis: Analisis, local: str, visitante: str) -> pd.DataFrame:
+    """Forma de ambos equipos lado a lado. Pares "propio / rival", promedios de 10 partidos."""
+    equipos = [s for s in (analisis.local, analisis.visitante) if s is not None]
+    extras = [n for n in ETIQUETAS_EXTRAS if any(n in s.extras for s in equipos)]
+    conceptos = [
+        "Partidos",
+        "G-E-P",
+        "Racha (reciente primero)",
+        "Anota / recibe",
+        "Como local · como visita",
+    ] + [ETIQUETAS_EXTRAS[n] for n in extras]
+    return pd.DataFrame(
+        {
+            "Concepto": conceptos,
+            local: _columna(analisis.local, extras),
+            visitante: _columna(analisis.visitante, extras),
+        }
+    )
+
+
+def tabla_cara_a_cara(resultados: list[ResultadoHistorico]) -> pd.DataFrame:
+    filas = [
+        (
+            r.fecha.isoformat(),
+            r.local,
+            f"{r.marcador_local} - {r.marcador_visitante}",
+            r.visitante,
+            r.temporada,
+        )
+        for r in resultados
+    ]
+    return pd.DataFrame(filas, columns=["Fecha", "Local", "Resultado", "Visita", "Temporada"])
 
 
 def exportar_excel(

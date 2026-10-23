@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
-from datetime import date, datetime
+from collections.abc import Iterable
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 
-from predictor.modelos import Apuesta, Movimiento
+from predictor.modelos import Apuesta, Cuota, Movimiento, Partido, ResultadoHistorico
 
 _ESQUEMA_V1 = """
 CREATE TABLE apuestas (
@@ -40,6 +42,41 @@ CREATE TABLE config (
     valor TEXT NOT NULL
 );
 PRAGMA user_version = 1;
+"""
+
+_ESQUEMA_V2 = """
+CREATE TABLE partidos (
+    id TEXT PRIMARY KEY,
+    deporte TEXT NOT NULL,
+    liga TEXT NOT NULL,
+    local TEXT NOT NULL,
+    visitante TEXT NOT NULL,
+    inicio TEXT NOT NULL
+);
+CREATE INDEX partidos_inicio ON partidos (inicio);
+CREATE TABLE cuotas (
+    partido_id TEXT NOT NULL REFERENCES partidos (id),
+    casa TEXT NOT NULL,
+    mercado TEXT NOT NULL,
+    seleccion TEXT NOT NULL,
+    linea TEXT,
+    cuota TEXT NOT NULL,
+    actualizada TEXT NOT NULL
+);
+CREATE INDEX cuotas_partido ON cuotas (partido_id);
+CREATE TABLE historial (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    liga TEXT NOT NULL,
+    temporada TEXT NOT NULL,
+    fecha TEXT NOT NULL,
+    local TEXT NOT NULL,
+    visitante TEXT NOT NULL,
+    marcador_local INTEGER NOT NULL,
+    marcador_visitante INTEGER NOT NULL,
+    extras TEXT NOT NULL,
+    UNIQUE (liga, fecha, local, visitante)
+);
+PRAGMA user_version = 2;
 """
 
 _COLUMNAS_APUESTA = (
@@ -103,6 +140,46 @@ def _fila_a_apuesta(fila: sqlite3.Row) -> Apuesta:
     )
 
 
+def _utc(momento: datetime) -> str:
+    return momento.astimezone(UTC).isoformat(timespec="seconds")
+
+
+def _fila_a_partido(fila: sqlite3.Row) -> Partido:
+    return Partido(
+        id=fila["id"],
+        deporte=fila["deporte"],
+        liga=fila["liga"],
+        local=fila["local"],
+        visitante=fila["visitante"],
+        inicio=datetime.fromisoformat(fila["inicio"]),
+    )
+
+
+def _fila_a_cuota(fila: sqlite3.Row) -> Cuota:
+    return Cuota(
+        partido_id=fila["partido_id"],
+        casa=fila["casa"],
+        mercado=fila["mercado"],
+        seleccion=fila["seleccion"],
+        cuota=Decimal(fila["cuota"]),
+        actualizada=datetime.fromisoformat(fila["actualizada"]),
+        linea=Decimal(fila["linea"]) if fila["linea"] is not None else None,
+    )
+
+
+def _fila_a_resultado(fila: sqlite3.Row) -> ResultadoHistorico:
+    return ResultadoHistorico(
+        liga=fila["liga"],
+        temporada=fila["temporada"],
+        fecha=date.fromisoformat(fila["fecha"]),
+        local=fila["local"],
+        visitante=fila["visitante"],
+        marcador_local=fila["marcador_local"],
+        marcador_visitante=fila["marcador_visitante"],
+        extras={nombre: tuple(par) for nombre, par in json.loads(fila["extras"]).items()},
+    )
+
+
 def _fila_a_movimiento(fila: sqlite3.Row) -> Movimiento:
     return Movimiento(
         id=fila["id"],
@@ -124,6 +201,8 @@ class Repositorio:
         version = self._con.execute("PRAGMA user_version").fetchone()[0]
         if version < 1:
             self._con.executescript(_ESQUEMA_V1)
+        if version < 2:
+            self._con.executescript(_ESQUEMA_V2)
 
     def cerrar(self) -> None:
         self._con.close()
@@ -183,6 +262,97 @@ class Repositorio:
     def listar_movimientos(self) -> list[Movimiento]:
         filas = self._con.execute("SELECT * FROM movimientos ORDER BY id").fetchall()
         return [_fila_a_movimiento(fila) for fila in filas]
+
+    # --- Partidos y cuotas ---
+
+    def reemplazar_cartelera(
+        self, liga: str, partidos: Iterable[Partido], cuotas: Iterable[Cuota]
+    ) -> None:
+        """Sustituye los partidos y cuotas de una liga por los de la última consulta."""
+        with self._con:
+            self._con.execute(
+                "DELETE FROM cuotas WHERE partido_id IN (SELECT id FROM partidos WHERE liga = ?)",
+                (liga,),
+            )
+            self._con.execute("DELETE FROM partidos WHERE liga = ?", (liga,))
+            self._con.executemany(
+                "INSERT INTO partidos (id, deporte, liga, local, visitante, inicio) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                [
+                    (p.id, p.deporte.value, p.liga, p.local, p.visitante, _utc(p.inicio))
+                    for p in partidos
+                ],
+            )
+            self._con.executemany(
+                "INSERT INTO cuotas (partido_id, casa, mercado, seleccion, linea, cuota, "
+                "actualizada) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        c.partido_id,
+                        c.casa,
+                        c.mercado.value,
+                        c.seleccion,
+                        str(c.linea) if c.linea is not None else None,
+                        str(c.cuota),
+                        _utc(c.actualizada),
+                    )
+                    for c in cuotas
+                ],
+            )
+
+    def listar_partidos(
+        self, desde: datetime, hasta: datetime, ligas: Iterable[str] | None = None
+    ) -> list[Partido]:
+        """Partidos que empiezan en [desde, hasta), ordenados por hora de inicio."""
+        consulta = "SELECT * FROM partidos WHERE inicio >= ? AND inicio < ?"
+        parametros: list = [_utc(desde), _utc(hasta)]
+        if ligas is not None:
+            ligas = list(ligas)
+            consulta += f" AND liga IN ({', '.join('?' * len(ligas))})"
+            parametros += ligas
+        filas = self._con.execute(consulta + " ORDER BY inicio, liga, id", parametros).fetchall()
+        return [_fila_a_partido(fila) for fila in filas]
+
+    def cuotas_de(self, partido_id: str) -> list[Cuota]:
+        filas = self._con.execute(
+            "SELECT * FROM cuotas WHERE partido_id = ? ORDER BY mercado, casa, seleccion",
+            (partido_id,),
+        ).fetchall()
+        return [_fila_a_cuota(fila) for fila in filas]
+
+    # --- Historial ---
+
+    def guardar_historial(
+        self, liga: str, temporada: str, resultados: Iterable[ResultadoHistorico]
+    ) -> None:
+        """Sustituye la temporada completa de una liga."""
+        with self._con:
+            self._con.execute(
+                "DELETE FROM historial WHERE liga = ? AND temporada = ?", (liga, temporada)
+            )
+            self._con.executemany(
+                "INSERT OR REPLACE INTO historial (liga, temporada, fecha, local, visitante, "
+                "marcador_local, marcador_visitante, extras) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        liga,
+                        temporada,
+                        r.fecha.isoformat(),
+                        r.local,
+                        r.visitante,
+                        r.marcador_local,
+                        r.marcador_visitante,
+                        json.dumps(r.extras),
+                    )
+                    for r in resultados
+                ],
+            )
+
+    def historial_de(self, liga: str) -> list[ResultadoHistorico]:
+        filas = self._con.execute(
+            "SELECT * FROM historial WHERE liga = ? ORDER BY fecha, id", (liga,)
+        ).fetchall()
+        return [_fila_a_resultado(fila) for fila in filas]
 
     # --- Configuración ---
 

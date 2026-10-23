@@ -1,4 +1,4 @@
-"""Entidades del dominio: apuestas, movimientos del fondo y sus validaciones."""
+"""Entidades del dominio: apuestas, fondo, partidos, cuotas e historial, con sus validaciones."""
 
 from __future__ import annotations
 
@@ -23,6 +23,18 @@ class Estado(StrEnum):
 class TipoMovimiento(StrEnum):
     DEPOSITO = "deposito"
     RETIRO = "retiro"
+
+
+class Mercado(StrEnum):
+    """Mercados de The Odds API; el valor es la clave que usa la API."""
+
+    GANADOR = "h2h"
+    TOTALES = "totals"
+    HANDICAP = "spreads"
+
+    @property
+    def etiqueta(self) -> str:
+        return {"h2h": "Ganador", "totals": "Over/Under", "spreads": "Hándicap"}[self.value]
 
 
 LIGAS: dict[Deporte, tuple[str, ...]] = {
@@ -62,8 +74,7 @@ class Apuesta:
         self.estado = Estado(self.estado)
         self.cuota = Decimal(str(self.cuota))
 
-        if self.liga not in LIGAS[self.deporte]:
-            raise ValueError(f"La liga '{self.liga}' no corresponde a {self.deporte}")
+        _validar_liga(self.deporte, self.liga)
         for nombre in ("partido", "mercado", "seleccion"):
             if not getattr(self, nombre).strip():
                 raise ValueError(f"El campo '{nombre}' es obligatorio")
@@ -96,3 +107,67 @@ class Movimiento:
     def __post_init__(self) -> None:
         self.tipo = TipoMovimiento(self.tipo)
         _validar_monto(self.monto)
+
+
+def _validar_liga(deporte: Deporte, liga: str) -> None:
+    if liga not in LIGAS[deporte]:
+        raise ValueError(f"La liga '{liga}' no corresponde a {deporte}")
+
+
+@dataclass
+class Partido:
+    id: str
+    deporte: Deporte
+    liga: str
+    local: str
+    visitante: str
+    inicio: datetime  # Con zona horaria; se guarda en UTC.
+
+    def __post_init__(self) -> None:
+        self.deporte = Deporte(self.deporte)
+        _validar_liga(self.deporte, self.liga)
+        for nombre in ("id", "local", "visitante"):
+            if not getattr(self, nombre).strip():
+                raise ValueError(f"El campo '{nombre}' es obligatorio")
+        if self.inicio.tzinfo is None:
+            raise ValueError("La hora de inicio debe tener zona horaria")
+
+    @property
+    def nombre(self) -> str:
+        return f"{self.local} vs {self.visitante}"
+
+
+@dataclass
+class Cuota:
+    partido_id: str
+    casa: str
+    mercado: Mercado
+    seleccion: str
+    cuota: Decimal
+    actualizada: datetime
+    linea: Decimal | None = None  # Puntos/goles del hándicap o del over/under.
+
+    def __post_init__(self) -> None:
+        self.mercado = Mercado(self.mercado)
+        self.cuota = Decimal(str(self.cuota))
+        if self.linea is not None:
+            self.linea = Decimal(str(self.linea))
+        if self.cuota <= 1:
+            raise ValueError("La cuota debe ser mayor a 1.00")
+
+
+@dataclass
+class ResultadoHistorico:
+    liga: str
+    temporada: str
+    fecha: date
+    local: str
+    visitante: str
+    marcador_local: int
+    marcador_visitante: int
+    # Estadística → (valor del local, valor del visitante), p. ej. {"tiros": (14, 9)}.
+    extras: dict[str, tuple[float, float]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.marcador_local < 0 or self.marcador_visitante < 0:
+            raise ValueError("El marcador no puede ser negativo")
