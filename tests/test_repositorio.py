@@ -9,13 +9,17 @@ from predictor.modelos import (
     Cuota,
     Deporte,
     Estado,
+    Jugador,
     Mercado,
     Movimiento,
     Partido,
+    Prediccion,
+    ProbabilidadLinea,
     ResultadoHistorico,
+    Rol,
     TipoMovimiento,
 )
-from predictor.repositorio import _ESQUEMA_V1, Repositorio
+from predictor.repositorio import _ESQUEMA_V1, _ESQUEMA_V2, Repositorio
 
 AHORA = datetime(2026, 10, 24, 12, 0, tzinfo=UTC)
 
@@ -143,7 +147,7 @@ def test_migra_base_v1_sin_perder_apuestas(tmp_path, crear_apuesta):
     repo = Repositorio(ruta)
 
     assert [a.partido for a in repo.listar_apuestas()] == ["A vs B"]
-    assert repo._con.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert repo._con.execute("PRAGMA user_version").fetchone()[0] == 3
     assert repo.listar_partidos(AHORA, AHORA + timedelta(days=1)) == []
     repo.cerrar()
 
@@ -209,3 +213,85 @@ def test_historial_reemplaza_la_temporada(repo):
     assert [r.fecha for r in historial] == [date(2026, 3, 1), date(2026, 9, 1), date(2026, 9, 8)]
     assert historial[-1] == nuevo
     assert repo.historial_de("NBA") == []
+
+
+def _prediccion(partido_id="p1", inicio=AHORA, **cambios):
+    datos = {
+        "partido_id": partido_id,
+        "liga": "Premier League",
+        "local": "Arsenal",
+        "visitante": "Everton",
+        "inicio": inicio,
+        "modelo": "poisson-1",
+        "creada": AHORA - timedelta(hours=3),
+        "esperado_local": 1.8,
+        "esperado_visitante": 0.9,
+        "prob_local": 0.55,
+        "prob_empate": 0.25,
+        "prob_visitante": 0.2,
+        "marcador_probable": "1-0",
+        "factores": ["Arsenal viene en racha: GGGGE en los últimos 5."],
+        "lineas": [ProbabilidadLinea(Mercado.TOTALES, "Over", 2.5, 0.52)],
+        "linea_total": 2.5,
+    }
+    return Prediccion(**(datos | cambios))
+
+
+def test_predicciones_sobreviven_al_reemplazo_de_cartelera(repo):
+    repo.reemplazar_cartelera("Premier League", [_partido("p1")], [_cuota("p1")])
+    prediccion = _prediccion()
+
+    repo.guardar_prediccion(prediccion)
+    repo.reemplazar_cartelera("Premier League", [], [])
+
+    leida = repo.prediccion_de("p1")
+    assert leida == prediccion
+    assert leida.prob_over == 0.52
+    assert repo.prediccion_de("otro") is None
+
+
+def test_guardar_prediccion_reemplaza_y_lista_por_inicio(repo):
+    repo.guardar_prediccion(_prediccion("tarde", inicio=AHORA + timedelta(hours=2)))
+    repo.guardar_prediccion(_prediccion("p1"))
+    repo.guardar_prediccion(_prediccion("p1", prob_local=0.5, prob_empate=0.3))
+
+    assert [p.partido_id for p in repo.listar_predicciones()] == ["p1", "tarde"]
+    assert repo.prediccion_de("p1").prob_local == 0.5
+    assert [p.partido_id for p in repo.listar_predicciones(hasta=AHORA + timedelta(hours=1))] == [
+        "p1"
+    ]
+
+
+def test_jugadores_se_reemplazan_por_liga(repo):
+    def jugador(nombre, liga="NBA", rol=Rol.DESTACADO, valor=20.0):
+        return Jugador(liga, "Boston Celtics", nombre, rol, "detalle", valor)
+
+    repo.reemplazar_jugadores("NBA", [jugador("Tatum", valor=25), jugador("White", valor=30)])
+    repo.reemplazar_jugadores("Premier League", [jugador("Haaland", liga="Premier League")])
+    repo.reemplazar_jugadores("NBA", [jugador("Tatum"), jugador("Carter", rol=Rol.LESIONADO)])
+
+    assert [(j.nombre, j.rol) for j in repo.jugadores_de("NBA")] == [
+        ("Tatum", Rol.DESTACADO),
+        ("Carter", Rol.LESIONADO),
+    ]
+    assert len(repo.jugadores_de("Premier League")) == 1
+
+
+def test_migra_base_v2_conserva_historial(tmp_path):
+    ruta = tmp_path / "v2.db"
+    con = sqlite3.connect(ruta)
+    con.executescript(_ESQUEMA_V1 + _ESQUEMA_V2)
+    con.execute(
+        "INSERT INTO historial (liga, temporada, fecha, local, visitante, marcador_local, "
+        "marcador_visitante, extras) "
+        "VALUES ('NBA', '2026-27', '2026-10-21', 'A', 'B', 100, 90, '{}')"
+    )
+    con.commit()
+    con.close()
+
+    repo = Repositorio(ruta)
+
+    assert repo._con.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert len(repo.historial_de("NBA")) == 1
+    assert repo.listar_predicciones() == []
+    repo.cerrar()

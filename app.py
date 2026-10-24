@@ -18,12 +18,23 @@ from predictor.exportar import (
     tabla_cara_a_cara,
     tabla_cuotas,
     tabla_estadisticas,
+    tabla_evaluacion,
+    tabla_jugadores,
     tabla_metricas,
     tabla_movimientos,
+    tabla_predicciones,
 )
 from predictor.fuentes.odds_api import ClienteOddsApi, costo_creditos
 from predictor.ligas import ZONA_CHILE
-from predictor.modelos import LIGAS, Apuesta, Deporte, Estado, Movimiento, TipoMovimiento
+from predictor.modelos import (
+    LIGAS,
+    Apuesta,
+    Deporte,
+    Estado,
+    Movimiento,
+    Prediccion,
+    TipoMovimiento,
+)
 from predictor.repositorio import Repositorio
 
 RUTA_BD = Path(os.environ.get("PREDICTOR_DB", "data/bitacora.db"))
@@ -71,14 +82,51 @@ def registrar(bitacora: Bitacora, **datos) -> None:
 
 
 def actualizar(cartelera: Cartelera, ligas: list[str]) -> None:
-    with st.spinner("Descargando cuotas e historial…"):
+    with st.spinner("Descargando cuotas, historial y jugadores…"):
         if cartelera.tiene_clave:
             cartelera.actualizar_cuotas(ligas)
         cartelera.actualizar_historial(ligas)
+        _, errores = cartelera.actualizar_jugadores(ligas)
+    st.session_state["errores_jugadores"] = errores
 
 
 def hora_chile(momento: datetime) -> str:
     return f"{momento.astimezone(ZONA_CHILE):%H:%M}"
+
+
+def mostrar_prediccion(prediccion: Prediccion, empezado: bool) -> None:
+    st.markdown(
+        "**Predicción del modelo**"
+        + (" (congelada al inicio)" if empezado else "")
+        + f" · {prediccion.modelo}"
+    )
+    columnas = st.columns(5 if prediccion.prob_empate is not None else 4)
+    columnas[0].metric(prediccion.local, pct(prediccion.prob_local))
+    if prediccion.prob_empate is not None:
+        columnas[1].metric("Empate", pct(prediccion.prob_empate))
+    columnas[-3].metric(prediccion.visitante, pct(prediccion.prob_visitante))
+    formato = ".2g" if prediccion.prob_empate is not None else ".1f"  # goles o puntos
+    columnas[-2].metric(
+        "Marcador esperado",
+        f"{prediccion.esperado_local:{formato}} - {prediccion.esperado_visitante:{formato}}",
+        help=(
+            f"Marcador más probable: {prediccion.marcador_probable}"
+            if prediccion.marcador_probable
+            else None
+        ),
+    )
+    total = f"{prediccion.total_esperado:.1f}"
+    if prediccion.linea_total is not None and prediccion.prob_over is not None:
+        columnas[-1].metric(
+            f"Total (línea {prediccion.linea_total:g})",
+            total,
+            delta=f"Over {pct(prediccion.prob_over)}",
+            delta_color="off",
+        )
+    else:
+        columnas[-1].metric("Total esperado", total)
+    if prediccion.factores:
+        st.markdown("\n".join(f"- {factor}" for factor in prediccion.factores))
 
 
 st.set_page_config(page_title="Predictor de apuestas", page_icon="📒", layout="wide")
@@ -93,7 +141,13 @@ with st.sidebar:
     st.metric("En juego", clp(resumen.en_juego))
     st.download_button(
         "Descargar Excel",
-        data=exportar_excel(apuestas, movimientos, resumen),
+        data=exportar_excel(
+            apuestas,
+            movimientos,
+            resumen,
+            obtener_repositorio().listar_predicciones(),
+            cartelera.evaluadas(),
+        ),
         file_name=f"bitacora_{date.today():%Y%m%d}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         width="stretch",
@@ -102,6 +156,7 @@ with st.sidebar:
 st.title("📒 Predictor de apuestas")
 (
     tab_partidos,
+    tab_modelo,
     tab_resumen,
     tab_nueva,
     tab_pendientes,
@@ -111,6 +166,7 @@ st.title("📒 Predictor de apuestas")
 ) = st.tabs(
     [
         "Partidos",
+        "Modelo",
         "Resumen",
         "Nueva apuesta",
         "Pendientes",
@@ -149,6 +205,8 @@ with tab_partidos:
             "reinicia la app. Mientras tanto se muestran las cuotas ya guardadas y el "
             "botón solo descarga el historial."
         )
+    for liga, error in st.session_state.get("errores_jugadores", {}).items():
+        st.warning(f"No se pudieron actualizar los jugadores de {liga}: {error}")
 
     partidos = cartelera.partidos(dia, desde_hora, hasta_hora, ligas) if ligas else []
     if not partidos:
@@ -159,11 +217,26 @@ with tab_partidos:
         if partido.inicio <= ahora:
             etiqueta += " · en curso"
         with st.expander(etiqueta):
+            prediccion = cartelera.predecir(partido)
+            if prediccion is not None:
+                mostrar_prediccion(prediccion, partido.inicio <= ahora)
+            else:
+                st.caption("Sin historial suficiente para que el modelo prediga este partido.")
             filas = cartelera.comparar(partido)
             if filas:
-                st.dataframe(tabla_cuotas(filas), hide_index=True, width="stretch")
+                st.dataframe(tabla_cuotas(filas, prediccion), hide_index=True, width="stretch")
             else:
                 st.caption("Sin cuotas para este partido.")
+            jugadores_local, jugadores_visitante = cartelera.jugadores(partido)
+            if jugadores_local or jugadores_visitante:
+                st.markdown("**Figuras y bajas**")
+                st.dataframe(
+                    tabla_jugadores(
+                        partido.local, jugadores_local, partido.visitante, jugadores_visitante
+                    ),
+                    hide_index=True,
+                    width="stretch",
+                )
             analisis = cartelera.analizar(partido)
             st.markdown("**Forma reciente** (propio / rival, promedio de los últimos 10)")
             st.dataframe(
@@ -176,6 +249,30 @@ with tab_partidos:
                 st.dataframe(
                     tabla_cara_a_cara(analisis.cara_a_cara), hide_index=True, width="stretch"
                 )
+
+with tab_modelo:
+    st.caption(
+        "El modelo es estadístico (Poisson en fútbol, ratings en la NBA). Cada predicción se "
+        "guarda antes del inicio y se mide contra el resultado real. La línea base predice "
+        "según cuánto gana el local, empata o gana la visita en la liga. Brier: menor es mejor."
+    )
+    evaluadas = cartelera.evaluadas()
+    st.subheader("Predicciones guardadas")
+    if evaluadas:
+        st.dataframe(tabla_evaluacion(cartelera.evaluacion()), hide_index=True, width="stretch")
+        st.dataframe(
+            tabla_predicciones([e.prediccion for e in reversed(evaluadas)], evaluadas),
+            hide_index=True,
+            width="stretch",
+        )
+    else:
+        st.info("Aún no hay predicciones con resultado. Se miden tras actualizar el historial.")
+    st.subheader("Backtest")
+    if st.checkbox("Calcular backtest sobre el historial guardado (tarda unos segundos)"):
+        with st.spinner("Recorriendo el historial…"):
+            backtest = cartelera.backtest([liga for d in Deporte for liga in LIGAS[d]])
+        st.caption("Cada fecha se predice solo con los partidos anteriores.")
+        st.dataframe(tabla_evaluacion(backtest), hide_index=True, width="stretch")
 
 with tab_resumen:
     capital = resumen.fondo_inicial + resumen.depositos - resumen.retiros

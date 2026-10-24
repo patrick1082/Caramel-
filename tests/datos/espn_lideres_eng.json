@@ -1,0 +1,76 @@
+{
+ "categories": [
+  {
+   "name": "goalsLeaders",
+   "displayName": "Goals",
+   "leaders": [
+    {
+     "displayValue": "Matches: 7, Goals: 8",
+     "value": 8.0,
+     "athlete": {
+      "$ref": "http://sports.core.api.espn.com/v2/sports/soccer/leagues/eng.1/seasons/2026/athletes/253989?lang=en&region=us"
+     },
+     "team": {
+      "$ref": "http://sports.core.api.espn.com/v2/sports/soccer/leagues/eng.1/seasons/2026/teams/382?lang=en&region=us"
+     }
+    },
+    {
+     "displayValue": "Matches: 6, Goals: 5",
+     "value": 5.0,
+     "athlete": {
+      "$ref": "http://sports.core.api.espn.com/v2/sports/soccer/leagues/eng.1/seasons/2026/athletes/284960?lang=en&region=us"
+     },
+     "team": {
+      "$ref": "http://sports.core.api.espn.com/v2/sports/soccer/leagues/eng.1/seasons/2026/teams/363?lang=en&region=us"
+     }
+    },
+    {
+     "displayValue": "Matches: 6, Goals: 5",
+     "value": 5.0,
+     "athlete": {
+      "$ref": "http://sports.core.api.espn.com/v2/sports/soccer/leagues/eng.1/seasons/2026/athletes/235662?lang=en&region=us"
+     },
+     "team": {
+      "$ref": "http://sports.core.api.espn.com/v2/sports/soccer/leagues/eng.1/seasons/2026/teams/364?lang=en&region=us"
+     }
+    }
+   ]
+  },
+  {
+   "name": "assistsLeaders",
+   "displayName": "Assists",
+   "leaders": [
+    {
+     "displayValue": "Matches: 7, Assists: 4",
+     "value": 4.0,
+     "athlete": {
+      "$ref": "http://sports.core.api.espn.com/v2/sports/soccer/leagues/eng.1/seasons/2026/athletes/132659?lang=en&region=us"
+     },
+     "team": {
+      "$ref": "http://sports.core.api.espn.com/v2/sports/soccer/leagues/eng.1/seasons/2026/teams/331?lang=en&region=us"
+     }
+    },
+    {
+     "displayValue": "Matches: 7, Assists: 4",
+     "value": 4.0,
+     "athlete": {
+      "$ref": "http://sports.core.api.espn.com/v2/sports/soccer/leagues/eng.1/seasons/2026/athletes/238262?lang=en&region=us"
+     },
+     "team": {
+      "$ref": "http://sports.core.api.espn.com/v2/sports/soccer/leagues/eng.1/seasons/2026/teams/359?lang=en&region=us"
+     }
+    },
+    {
+     "displayValue": "Matches: 7, Assists: 4",
+     "value": 4.0,
+     "athlete": {
+      "$ref": "http://sports.core.api.espn.com/v2/sports/soccer/leagues/eng.1/seasons/2026/athletes/102368?lang=en&region=us"
+     },
+     "team": {
+      "$ref": "http://sports.core.api.espn.com/v2/sports/soccer/leagues/eng.1/seasons/2026/teams/349?lang=en&region=us"
+     }
+    }
+   ]
+  }
+ ]
+}

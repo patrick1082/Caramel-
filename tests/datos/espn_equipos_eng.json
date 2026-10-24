@@ -1,0 +1,54 @@
+{
+ "sports": [
+  {
+   "leagues": [
+    {
+     "teams": [
+      {
+       "team": {
+        "id": "349",
+        "displayName": "AFC Bournemouth",
+        "shortDisplayName": "Bournemouth"
+       }
+      },
+      {
+       "team": {
+        "id": "359",
+        "displayName": "Arsenal",
+        "shortDisplayName": "Arsenal"
+       }
+      },
+      {
+       "team": {
+        "id": "331",
+        "displayName": "Brighton & Hove Albion",
+        "shortDisplayName": "Brighton"
+       }
+      },
+      {
+       "team": {
+        "id": "363",
+        "displayName": "Chelsea",
+        "shortDisplayName": "Chelsea"
+       }
+      },
+      {
+       "team": {
+        "id": "364",
+        "displayName": "Liverpool",
+        "shortDisplayName": "Liverpool"
+       }
+      },
+      {
+       "team": {
+        "id": "382",
+        "displayName": "Manchester City",
+        "shortDisplayName": "Man City"
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

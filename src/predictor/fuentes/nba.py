@@ -1,4 +1,4 @@
-"""Historial NBA desde stats.nba.com a través del paquete nba_api."""
+"""Historial y jugadores NBA desde stats.nba.com a través del paquete nba_api."""
 
 from __future__ import annotations
 
@@ -7,11 +7,12 @@ from collections import defaultdict
 from collections.abc import Callable
 from datetime import date
 
-from predictor.modelos import ResultadoHistorico
+from predictor.modelos import Jugador, ResultadoHistorico, Rol
 
 logger = logging.getLogger(__name__)
 
 TIEMPO_ESPERA = 30  # segundos
+POR_EQUIPO = 3  # jugadores destacados por equipo
 
 # Estadística → columna de LeagueGameFinder (una fila por equipo y partido).
 EXTRAS = {
@@ -79,3 +80,56 @@ def descargar(
     resultados = parsear(temporada, filas)
     logger.info("Historial NBA %s: %s partidos", temporada, len(resultados))
     return resultados
+
+
+def _buscar_jugadores(temporada: str) -> list[dict]:
+    from nba_api.stats.endpoints import leaguedashplayerstats
+
+    consulta = leaguedashplayerstats.LeagueDashPlayerStats(
+        season=temporada,
+        season_type_all_star="Regular Season",
+        per_mode_detailed="PerGame",
+        timeout=TIEMPO_ESPERA,
+    )
+    return consulta.get_normalized_dict()["LeagueDashPlayerStats"]
+
+
+def _nombres_equipos() -> dict[int, str]:
+    from nba_api.stats.static import teams  # datos incluidos en el paquete, sin red
+
+    return {equipo["id"]: equipo["full_name"] for equipo in teams.get_teams()}
+
+
+def _cifra(valor: float) -> str:
+    return f"{valor:.1f}".removesuffix(".0")
+
+
+def jugadores(
+    temporada: str, buscar: Callable[[str], list[dict]] = _buscar_jugadores
+) -> list[Jugador]:
+    """Los máximos anotadores (promedio por partido) de cada equipo."""
+    try:
+        filas = buscar(temporada)
+    except Exception as error:  # mismo motivo que en `descargar`
+        raise ValueError(
+            f"No se pudieron descargar los jugadores NBA {temporada} ({type(error).__name__})"
+        ) from error
+    nombres = _nombres_equipos()
+    por_equipo: dict[str, list[dict]] = defaultdict(list)
+    for fila in filas:
+        if fila.get("TEAM_ID") in nombres and fila.get("PTS") is not None:
+            por_equipo[nombres[fila["TEAM_ID"]]].append(fila)
+
+    resultado = []
+    for equipo, filas_equipo in por_equipo.items():
+        for fila in sorted(filas_equipo, key=lambda f: -f["PTS"])[:POR_EQUIPO]:
+            detalle = (
+                f"{_cifra(fila['PTS'])} pts, {_cifra(fila.get('REB') or 0)} reb, "
+                f"{_cifra(fila.get('AST') or 0)} ast en {_cifra(fila.get('MIN') or 0)} min "
+                f"({fila.get('GP') or 0} PJ)"
+            )
+            resultado.append(
+                Jugador("NBA", equipo, fila["PLAYER_NAME"], Rol.DESTACADO, detalle, fila["PTS"])
+            )
+    logger.info("Jugadores NBA %s: %s destacados", temporada, len(resultado))
+    return resultado

@@ -9,7 +9,16 @@ import pandas as pd
 from predictor.bitacora import Metricas, Resumen
 from predictor.cartelera import Analisis, FilaComparacion
 from predictor.estadisticas import Estadisticas, Promedios
-from predictor.modelos import Apuesta, Mercado, Movimiento, ResultadoHistorico
+from predictor.evaluacion import TOTAL, Evaluada, MetricasModelo
+from predictor.ligas import ZONA_CHILE
+from predictor.modelos import (
+    Apuesta,
+    Jugador,
+    Mercado,
+    Movimiento,
+    Prediccion,
+    ResultadoHistorico,
+)
 
 COLUMNAS_APUESTAS = {
     "id": "N°",
@@ -61,6 +70,34 @@ COLUMNAS_CUOTAS = (
     "Casa mejor",
     "Promedio",
     "Casas",
+)
+
+COLUMNAS_EVALUACION = (
+    "Liga",
+    "Partidos",
+    "Acierto modelo (%)",
+    "Acierto base (%)",
+    "Brier modelo",
+    "Brier base",
+    "Error medio",
+    "Over/under medidos",
+    "Acierto over/under (%)",
+)
+
+COLUMNAS_PREDICCIONES = (
+    "Inicio",
+    "Liga",
+    "Partido",
+    "Local (%)",
+    "Empate (%)",
+    "Visita (%)",
+    "Esperado",
+    "Marcador probable",
+    "Línea total",
+    "Over (%)",
+    "Resultado",
+    "Acierto",
+    "Acierto over/under",
 )
 
 ETIQUETAS_EXTRAS = {
@@ -175,7 +212,24 @@ def _linea(fila: FilaComparacion) -> str:
     return f"{fila.linea:+g}" if fila.mercado is Mercado.HANDICAP else f"{fila.linea:g}"
 
 
-def tabla_cuotas(filas: list[FilaComparacion]) -> pd.DataFrame:
+def _prob_modelo(fila: FilaComparacion, prediccion: Prediccion) -> float | None:
+    if fila.mercado is Mercado.GANADOR:
+        return {
+            prediccion.local: prediccion.prob_local,
+            "Draw": prediccion.prob_empate,
+            prediccion.visitante: prediccion.prob_visitante,
+        }.get(fila.seleccion)
+    linea = None if fila.linea is None else float(fila.linea)
+    for p in prediccion.lineas:
+        if (p.mercado, p.seleccion, p.linea) == (fila.mercado, fila.seleccion, linea):
+            return p.prob
+    return None
+
+
+def tabla_cuotas(
+    filas: list[FilaComparacion], prediccion: Prediccion | None = None
+) -> pd.DataFrame:
+    """Cuotas por casa; con predicción suma la probabilidad del modelo y su cuota justa."""
     datos = [
         (
             f.mercado.etiqueta,
@@ -190,7 +244,79 @@ def tabla_cuotas(filas: list[FilaComparacion]) -> pd.DataFrame:
         )
         for f in filas
     ]
-    return pd.DataFrame(datos, columns=COLUMNAS_CUOTAS)
+    tabla = pd.DataFrame(datos, columns=COLUMNAS_CUOTAS)
+    if prediccion is not None:
+        probs = [_prob_modelo(f, prediccion) for f in filas]
+        tabla["Modelo (%)"] = [_porcentaje(p) for p in probs]
+        tabla["Cuota justa"] = [round(1 / p, 2) if p else None for p in probs]
+    return tabla
+
+
+def tabla_jugadores(
+    local: str, jugadores_local: list[Jugador], visitante: str, jugadores_visitante: list[Jugador]
+) -> pd.DataFrame:
+    filas = [
+        (equipo, j.rol.value.capitalize(), j.nombre, j.detalle)
+        for equipo, jugadores in ((local, jugadores_local), (visitante, jugadores_visitante))
+        for j in jugadores
+    ]
+    return pd.DataFrame(filas, columns=["Equipo", "Rol", "Jugador", "Detalle"])
+
+
+def _redondear(valor: float | None, decimales: int = 3) -> float | None:
+    return None if valor is None else round(valor, decimales)
+
+
+def tabla_evaluacion(metricas: dict[str, MetricasModelo]) -> pd.DataFrame:
+    """Modelo frente a la línea base por liga. El total no tiene error medio: mezcla goles y
+    puntos."""
+    filas = [
+        (
+            liga,
+            m.partidos,
+            _porcentaje(m.acierto),
+            _porcentaje(m.acierto_base),
+            _redondear(m.brier),
+            _redondear(m.brier_base),
+            None if liga == TOTAL else _redondear(m.error_medio, 2),
+            m.lineas,
+            _porcentaje(m.acierto_over_under),
+        )
+        for liga, m in metricas.items()
+    ]
+    return pd.DataFrame(filas, columns=COLUMNAS_EVALUACION)
+
+
+def _si_no(valor: bool | None) -> str:
+    return "" if valor is None else ("Sí" if valor else "No")
+
+
+def tabla_predicciones(
+    predicciones: list[Prediccion], evaluadas: list[Evaluada] = ()
+) -> pd.DataFrame:
+    """Una fila por predicción guardada; las columnas de resultado se llenan si ya se evaluó."""
+    por_partido = {e.prediccion.partido_id: e for e in evaluadas}
+    filas = []
+    for p in predicciones:
+        e = por_partido.get(p.partido_id)
+        filas.append(
+            (
+                p.inicio.astimezone(ZONA_CHILE).strftime("%Y-%m-%d %H:%M"),
+                p.liga,
+                f"{p.local} vs {p.visitante}",
+                _porcentaje(p.prob_local),
+                _porcentaje(p.prob_empate),
+                _porcentaje(p.prob_visitante),
+                f"{p.esperado_local:g} - {p.esperado_visitante:g}",
+                p.marcador_probable or "",
+                p.linea_total,
+                _porcentaje(p.prob_over),
+                f"{e.resultado.marcador_local} - {e.resultado.marcador_visitante}" if e else "",
+                _si_no(e.acierto) if e else "",
+                _si_no(e.acierto_linea) if e else "",
+            )
+        )
+    return pd.DataFrame(filas, columns=COLUMNAS_PREDICCIONES)
 
 
 def _par(promedios: Promedios | None) -> str:
@@ -249,7 +375,11 @@ def tabla_cara_a_cara(resultados: list[ResultadoHistorico]) -> pd.DataFrame:
 
 
 def exportar_excel(
-    apuestas: list[Apuesta], movimientos: list[Movimiento], resumen: Resumen
+    apuestas: list[Apuesta],
+    movimientos: list[Movimiento],
+    resumen: Resumen,
+    predicciones: list[Prediccion] = (),
+    evaluadas: list[Evaluada] = (),
 ) -> bytes:
     totales = tabla_resumen(resumen)
     desglose = tabla_metricas({**resumen.por_deporte, **resumen.por_liga})
@@ -260,6 +390,9 @@ def exportar_excel(
         tabla_movimientos(movimientos).to_excel(writer, sheet_name="Movimientos", index=False)
         totales.to_excel(writer, sheet_name="Resumen", index=False)
         desglose.to_excel(writer, sheet_name="Resumen", index=False, startrow=len(totales) + 2)
+        tabla_predicciones(list(predicciones), list(evaluadas)).to_excel(
+            writer, sheet_name="Predicciones", index=False
+        )
         for hoja in writer.sheets.values():
             for columna in hoja.columns:
                 ancho = max(len(str(celda.value or "")) for celda in columna)

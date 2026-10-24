@@ -1,4 +1,4 @@
-"""Entidades del dominio: apuestas, fondo, partidos, cuotas e historial, con sus validaciones."""
+"""Entidades del dominio: apuestas, fondo, partidos, cuotas, historial y predicciones."""
 
 from __future__ import annotations
 
@@ -171,3 +171,84 @@ class ResultadoHistorico:
     def __post_init__(self) -> None:
         if self.marcador_local < 0 or self.marcador_visitante < 0:
             raise ValueError("El marcador no puede ser negativo")
+
+
+class Rol(StrEnum):
+    DESTACADO = "destacado"
+    LESIONADO = "lesionado"
+
+
+@dataclass
+class Jugador:
+    liga: str
+    equipo: str  # Nombre en la fuente del jugador; se cruza con `emparejar`.
+    nombre: str
+    rol: Rol
+    detalle: str  # "8 goles · 7 PJ", "Out · Foot"
+    valor: float = 0.0  # Puntos o goles por los que se ordena.
+
+    def __post_init__(self) -> None:
+        self.rol = Rol(self.rol)
+        for nombre in ("equipo", "nombre"):
+            if not getattr(self, nombre).strip():
+                raise ValueError(f"El campo '{nombre}' es obligatorio")
+
+
+@dataclass(frozen=True)
+class ProbabilidadLinea:
+    mercado: Mercado
+    seleccion: str
+    linea: float | None
+    prob: float
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "mercado", Mercado(self.mercado))
+        if not 0 <= self.prob <= 1:
+            raise ValueError("La probabilidad debe estar entre 0 y 1")
+
+
+_TOLERANCIA = 0.01
+
+
+@dataclass
+class Prediccion:
+    partido_id: str
+    liga: str
+    local: str
+    visitante: str
+    inicio: datetime
+    modelo: str  # Versión, p. ej. "poisson-1"
+    creada: datetime
+    esperado_local: float
+    esperado_visitante: float
+    prob_local: float
+    prob_empate: float | None  # None en la NBA
+    prob_visitante: float
+    marcador_probable: str | None = None
+    factores: list[str] = field(default_factory=list)
+    lineas: list[ProbabilidadLinea] = field(default_factory=list)
+    linea_total: float | None = None  # Línea principal de over/under de Betano
+
+    def __post_init__(self) -> None:
+        if self.inicio.tzinfo is None or self.creada.tzinfo is None:
+            raise ValueError("Las fechas de la predicción deben tener zona horaria")
+        if self.esperado_local < 0 or self.esperado_visitante < 0:
+            raise ValueError("Los goles o puntos esperados no pueden ser negativos")
+        probs = [self.prob_local, self.prob_visitante] + (
+            [self.prob_empate] if self.prob_empate is not None else []
+        )
+        if any(not 0 <= p <= 1 for p in probs) or abs(sum(probs) - 1) > _TOLERANCIA:
+            raise ValueError("Las probabilidades deben estar entre 0 y 1 y sumar 1")
+
+    @property
+    def total_esperado(self) -> float:
+        return self.esperado_local + self.esperado_visitante
+
+    @property
+    def prob_over(self) -> float | None:
+        """Probabilidad del over en la línea principal, si se calculó."""
+        for p in self.lineas:
+            principal = p.linea == self.linea_total
+            if p.mercado is Mercado.TOTALES and p.seleccion == "Over" and principal:
+                return p.prob
+        return None

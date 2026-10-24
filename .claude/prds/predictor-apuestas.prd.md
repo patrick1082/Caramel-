@@ -48,7 +48,7 @@ We'll know we're right when **el ROI de las apuestas filtradas por la app supera
 |---|---|---|---|---|
 | 1 | Bitácora y fondo | El usuario registra apuestas, ve balances totales y exporta a Excel | complete | `.claude/plans/bitacora-y-fondo.plan.md` |
 | 2 | Partidos y cuotas | El usuario consulta partidos próximos (NBA + 5 ligas) con cuotas de Betano y proveedores de comparación | complete | `.claude/plans/partidos-y-cuotas.plan.md` |
-| 3 | Predicción IA | Cada partido muestra predicción con puntos/goles, jugadores y factores clave | pending | — |
+| 3 | Predicción IA | Cada partido muestra predicción con puntos/goles, jugadores y factores clave | complete | `.claude/plans/prediccion-ia.plan.md` |
 | 4 | Contraste y valor | El usuario ve su predicción vs. IA vs. pronósticos web, con apuestas de valor marcadas | pending | — |
 | 5 | Gestión de stake | La app sugiere % de billetera por apuesta y lo registra en la bitácora | pending | — |
 

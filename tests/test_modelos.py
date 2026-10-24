@@ -163,3 +163,59 @@ def test_resultado_historico_no_admite_marcador_negativo():
 )
 def test_temporadas(deporte, hoy, esperado):
     assert temporadas(deporte, hoy) == esperado
+
+
+def _prediccion(**cambios):
+    from datetime import UTC, datetime
+
+    from predictor.modelos import Mercado, Prediccion, ProbabilidadLinea
+
+    datos = dict(
+        partido_id="x",
+        liga="Premier League",
+        local="Aston Villa",
+        visitante="Manchester City",
+        inicio=datetime(2026, 10, 24, 11, 30, tzinfo=UTC),
+        modelo="poisson-1",
+        creada=datetime(2026, 10, 23, 15, tzinfo=UTC),
+        esperado_local=1.1,
+        esperado_visitante=1.6,
+        prob_local=0.3,
+        prob_empate=0.25,
+        prob_visitante=0.45,
+        lineas=[
+            ProbabilidadLinea(Mercado.TOTALES, "Over", 2.5, 0.5),
+            ProbabilidadLinea(Mercado.TOTALES, "Over", 3.5, 0.3),
+        ],
+        linea_total=2.5,
+    )
+    return Prediccion(**(datos | cambios))
+
+
+def test_prediccion_totales_y_over_de_la_linea_principal():
+    prediccion = _prediccion()
+
+    assert prediccion.total_esperado == pytest.approx(2.7)
+    assert prediccion.prob_over == 0.5
+    assert _prediccion(linea_total=None).prob_over is None
+
+
+@pytest.mark.parametrize(
+    "cambios, mensaje",
+    [
+        ({"prob_local": 0.5}, "sumar 1"),
+        ({"esperado_local": -1}, "negativos"),
+        ({"creada": __import__("datetime").datetime(2026, 10, 23)}, "zona horaria"),
+    ],
+)
+def test_prediccion_invalida(cambios, mensaje):
+    with pytest.raises(ValueError, match=mensaje):
+        _prediccion(**cambios)
+
+
+def test_jugador_requiere_nombre():
+    from predictor.modelos import Jugador
+
+    with pytest.raises(ValueError, match="nombre"):
+        Jugador("NBA", "Boston Celtics", " ", "lesionado", "Out · Knee")
+    assert Jugador("NBA", "Boston Celtics", "Devin Carter", "lesionado", "Out").rol == "lesionado"

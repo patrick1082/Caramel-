@@ -1,4 +1,4 @@
-"""Servicio de partidos: actualiza cuotas e historial, filtra la cartelera y arma comparaciones."""
+"""Servicio de partidos: actualiza cuotas, historial y jugadores, compara cuotas y predice."""
 
 from __future__ import annotations
 
@@ -8,20 +8,47 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from statistics import fmean
+from zoneinfo import ZoneInfo
 
-from predictor import estadisticas
+from predictor import estadisticas, evaluacion, factores
 from predictor.estadisticas import Estadisticas
-from predictor.fuentes import football_data, nba
+from predictor.evaluacion import MINIMO_BACKTEST, Evaluada, MetricasModelo
+from predictor.fuentes import espn, football_data, nba
 from predictor.fuentes.odds_api import ClienteOddsApi, costo_creditos
-from predictor.ligas import CASA_BASE, CASA_REFERENCIA, CASAS, FUENTES, ZONA_CHILE, temporadas
-from predictor.modelos import Cuota, Deporte, Mercado, Partido, ResultadoHistorico
+from predictor.ligas import (
+    CASA_BASE,
+    CASA_REFERENCIA,
+    CASAS,
+    FUENTES,
+    ZONA_CHILE,
+    anio_temporada,
+    temporadas,
+)
+from predictor.modelos import (
+    Cuota,
+    Deporte,
+    Jugador,
+    Mercado,
+    Partido,
+    Prediccion,
+    ProbabilidadLinea,
+    ResultadoHistorico,
+)
 from predictor.nombres import emparejar
+from predictor.prediccion import Ajuste, Pronostico, ajustar
 from predictor.repositorio import Repositorio
 
 logger = logging.getLogger(__name__)
 
 VIGENCIA_CUOTAS = timedelta(minutes=60)
 VIGENCIA_HISTORIAL = timedelta(days=1)
+VIGENCIA_JUGADORES = timedelta(days=1)
+
+# Las fechas del historial son locales de cada liga: así el descanso se cuenta bien.
+ZONA_HISTORIAL = {
+    Deporte.FUTBOL: ZoneInfo("Europe/Paris"),
+    Deporte.NBA: ZoneInfo("America/New_York"),
+}
 
 _CREDITOS = "odds_creditos_restantes"
 _ORDEN_MERCADOS = list(Mercado)
@@ -47,6 +74,54 @@ class Analisis:
     cara_a_cara: list[ResultadoHistorico]
 
 
+def descargar_jugadores(liga: str, hoy: date) -> list[Jugador]:
+    """Figuras de la temporada en curso: nba_api + lesiones de ESPN, o goleadores de ESPN."""
+    deporte = FUENTES[liga].deporte
+    if deporte is Deporte.NBA:
+        return nba.jugadores(temporadas(deporte, hoy)[0]) + espn.lesiones_nba()
+    return espn.goleadores(liga, anio_temporada(deporte, hoy))
+
+
+def _linea_principal(cuotas: Sequence[Cuota]) -> float | None:
+    """Línea de totales con Over y Under más parejos, de Betano o, si no, de Pinnacle."""
+    for casa in (CASA_BASE, CASA_REFERENCIA):
+        precios: dict[Decimal, dict[str, Decimal]] = {}
+        for c in cuotas:
+            if c.casa == casa and c.mercado is Mercado.TOTALES and c.linea is not None:
+                precios.setdefault(c.linea, {})[c.seleccion] = c.cuota
+        parejas = {
+            linea: abs(p["Over"] - p["Under"])
+            for linea, p in precios.items()
+            if {"Over", "Under"} <= p.keys()
+        }
+        if parejas:
+            return float(min(parejas, key=lambda linea: (parejas[linea], linea)))
+    return None
+
+
+def _lineas(
+    partido: Partido, pronostico: Pronostico, cuotas: Sequence[Cuota]
+) -> list[ProbabilidadLinea]:
+    """Probabilidad del modelo en cada línea de totales y hándicap que ofrecen las casas."""
+    lineas = {}
+    for c in cuotas:
+        if c.linea is None:
+            continue
+        linea = float(c.linea)
+        if c.mercado is Mercado.TOTALES and c.seleccion in ("Over", "Under"):
+            over = pronostico.prob_over(linea)
+            prob = over if c.seleccion == "Over" else 1 - over
+        elif c.mercado is Mercado.HANDICAP and c.seleccion in (partido.local, partido.visitante):
+            prob = pronostico.prob_handicap(c.seleccion == partido.local, linea)
+        else:
+            continue
+        lineas[(c.mercado, c.seleccion, linea)] = ProbabilidadLinea(
+            c.mercado, c.seleccion, linea, round(prob, 4)
+        )
+    orden = list(Mercado)
+    return [lineas[k] for k in sorted(lineas, key=lambda k: (orden.index(k[0]), k[2], k[1]))]
+
+
 class Cartelera:
     def __init__(
         self,
@@ -55,13 +130,17 @@ class Cartelera:
         descargar_futbol: Callable[[str, str], list[ResultadoHistorico]] = football_data.descargar,
         descargar_nba: Callable[[str], list[ResultadoHistorico]] = nba.descargar,
         reloj: Callable[[], datetime] = lambda: datetime.now(UTC),
+        descargar_jugadores: Callable[[str, date], list[Jugador]] = descargar_jugadores,
     ) -> None:
         self._repo = repo
         self._cliente = cliente
         self._descargar_futbol = descargar_futbol
         self._descargar_nba = descargar_nba
+        self._descargar_jugadores = descargar_jugadores
         self._reloj = reloj
         self._historiales: dict[str, list[ResultadoHistorico]] = {}
+        self._ajustes: dict[tuple[str, date], Ajuste] = {}
+        self._backtests: dict[str, list[Evaluada]] = {}
 
     # --- Estado de las actualizaciones ---
 
@@ -132,9 +211,35 @@ class Cartelera:
                     resultados = self._descargar_futbol(liga, temporada)
                 self._repo.guardar_historial(liga, temporada, resultados)
             self._marcar(clave)
-            self._historiales.pop(liga, None)
+            self._olvidar(liga)
             actualizadas.append(liga)
         return actualizadas
+
+    def actualizar_jugadores(
+        self, ligas: Iterable[str], forzar: bool = False
+    ) -> tuple[list[str], dict[str, str]]:
+        """Figuras y lesiones una vez al día por liga; si una fuente falla, sigue con el resto.
+
+        Devuelve las ligas actualizadas y el error de cada liga que falló.
+        """
+        limite = self._reloj() - VIGENCIA_JUGADORES
+        hoy = self._reloj().astimezone(ZONA_CHILE).date()
+        actualizadas, errores = [], {}
+        for liga in ligas:
+            clave = f"jugadores_actualizados:{liga}"
+            momento = self._momento(clave)
+            if not forzar and momento is not None and momento >= limite:
+                continue
+            try:
+                jugadores = self._descargar_jugadores(liga, hoy)
+            except ValueError as error:
+                logger.warning("Jugadores de %s sin actualizar: %s", liga, error)
+                errores[liga] = str(error)
+                continue
+            self._repo.reemplazar_jugadores(liga, jugadores)
+            self._marcar(clave)
+            actualizadas.append(liga)
+        return actualizadas, errores
 
     # --- Consultas ---
 
@@ -187,6 +292,13 @@ class Cartelera:
 
         return sorted(filas, key=clave)
 
+    def _olvidar(self, liga: str) -> None:
+        """Descarta lo calculado con el historial anterior de la liga."""
+        self._historiales.pop(liga, None)
+        self._backtests.pop(liga, None)
+        for clave in [k for k in self._ajustes if k[0] == liga]:
+            del self._ajustes[clave]
+
     def _historial(self, liga: str) -> Sequence[ResultadoHistorico]:
         if liga not in self._historiales:
             self._historiales[liga] = self._repo.historial_de(liga)
@@ -205,3 +317,85 @@ class Cartelera:
                 estadisticas.cara_a_cara(local, visitante, historial) if local and visitante else []
             ),
         )
+
+    def jugadores(self, partido: Partido) -> tuple[list[Jugador], list[Jugador]]:
+        """Figuras y lesionados del local y del visitante, cruzando nombres de equipos."""
+        por_equipo: dict[str, list[Jugador]] = {}
+        for jugador in self._repo.jugadores_de(partido.liga):
+            por_equipo.setdefault(jugador.equipo, []).append(jugador)
+        local = emparejar(partido.local, por_equipo) if por_equipo else None
+        visitante = emparejar(partido.visitante, por_equipo) if por_equipo else None
+        return por_equipo.get(local, []), por_equipo.get(visitante, [])
+
+    def _ajuste(self, liga: str, fecha: date) -> Ajuste:
+        if (liga, fecha) not in self._ajustes:
+            deporte = FUENTES[liga].deporte
+            self._ajustes[(liga, fecha)] = ajustar(deporte, self._historial(liga), fecha)
+        return self._ajustes[(liga, fecha)]
+
+    def predecir(self, partido: Partido) -> Prediccion | None:
+        """Predicción del modelo, guardada para medirla después.
+
+        Antes del inicio se recalcula con los datos más nuevos; desde el inicio queda congelada
+        y se devuelve la guardada. None si el historial no alcanza para predecir.
+        """
+        if self._reloj() >= partido.inicio:
+            return self._repo.prediccion_de(partido.id)
+        analisis = self.analizar(partido)
+        if analisis.local is None or analisis.visitante is None:
+            return None
+        fecha = partido.inicio.astimezone(ZONA_HISTORIAL[partido.deporte]).date()
+        ajuste = self._ajuste(partido.liga, fecha)
+        pronostico = ajuste.pronosticar(analisis.local.equipo, analisis.visitante.equipo)
+        if pronostico is None:
+            return None
+        cuotas = self._repo.cuotas_de(partido.id)
+        jugadores_local, jugadores_visitante = self.jugadores(partido)
+        prediccion = pronostico.a_prediccion(
+            partido.id,
+            partido.liga,
+            partido.local,
+            partido.visitante,
+            partido.inicio,
+            self._reloj(),
+            factores=factores.generar(
+                partido.deporte,
+                partido.local,
+                partido.visitante,
+                analisis.local,
+                analisis.visitante,
+                analisis.cara_a_cara,
+                pronostico,
+                jugadores_local,
+                jugadores_visitante,
+            ),
+            lineas=_lineas(partido, pronostico, cuotas),
+            linea_total=_linea_principal(cuotas),
+        )
+        self._repo.guardar_prediccion(prediccion)
+        return prediccion
+
+    # --- Evaluación del modelo ---
+
+    def evaluadas(self) -> list[Evaluada]:
+        """Predicciones de partidos ya empezados que tienen resultado en el historial."""
+        predicciones = self._repo.listar_predicciones(hasta=self._reloj())
+        ligas = sorted({p.liga for p in predicciones})
+        historial = [r for liga in ligas for r in self._historial(liga)]
+        return evaluacion.cruzar(predicciones, historial)
+
+    def evaluacion(self) -> dict[str, MetricasModelo]:
+        return evaluacion.por_liga(self.evaluadas())
+
+    def backtest(
+        self, ligas: Iterable[str], minimo: int = MINIMO_BACKTEST
+    ) -> dict[str, MetricasModelo]:
+        """Walk-forward sobre todo el historial guardado (temporada actual y anterior)."""
+        evaluadas = []
+        for liga in ligas:
+            if liga not in self._backtests:
+                self._backtests[liga] = evaluacion.backtest(
+                    liga, self._historial(liga), minimo=minimo
+                )
+            evaluadas += self._backtests[liga]
+        return evaluacion.por_liga(evaluadas)

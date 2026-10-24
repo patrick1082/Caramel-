@@ -1,0 +1,74 @@
+[
+ {
+  "PLAYER_NAME": "Nickeil Alexander-Walker",
+  "TEAM_ID": 1610612737,
+  "GP": 1,
+  "MIN": 29.7,
+  "PTS": 31.0,
+  "REB": 4.0,
+  "AST": 3.0
+ },
+ {
+  "PLAYER_NAME": "Dyson Daniels",
+  "TEAM_ID": 1610612737,
+  "GP": 1,
+  "MIN": 34.6,
+  "PTS": 20.0,
+  "REB": 4.0,
+  "AST": 3.0
+ },
+ {
+  "PLAYER_NAME": "Jalen Johnson",
+  "TEAM_ID": 1610612737,
+  "GP": 1,
+  "MIN": 27.8,
+  "PTS": 20.0,
+  "REB": 14.0,
+  "AST": 6.0
+ },
+ {
+  "PLAYER_NAME": "CJ McCollum",
+  "TEAM_ID": 1610612737,
+  "GP": 1,
+  "MIN": 24.7,
+  "PTS": 19.0,
+  "REB": 2.0,
+  "AST": 3.0
+ },
+ {
+  "PLAYER_NAME": "Paul George",
+  "TEAM_ID": 1610612738,
+  "GP": 1,
+  "MIN": 30.6,
+  "PTS": 38.0,
+  "REB": 5.0,
+  "AST": 3.0
+ },
+ {
+  "PLAYER_NAME": "Derrick White",
+  "TEAM_ID": 1610612738,
+  "GP": 1,
+  "MIN": 35.9,
+  "PTS": 17.0,
+  "REB": 1.0,
+  "AST": 8.0
+ },
+ {
+  "PLAYER_NAME": "Payton Pritchard",
+  "TEAM_ID": 1610612738,
+  "GP": 1,
+  "MIN": 27.5,
+  "PTS": 17.0,
+  "REB": 4.0,
+  "AST": 1.0
+ },
+ {
+  "PLAYER_NAME": "Jayson Tatum",
+  "TEAM_ID": 1610612738,
+  "GP": 1,
+  "MIN": 37.8,
+  "PTS": 13.0,
+  "REB": 4.0,
+  "AST": 11.0
+ }
+]
