@@ -1,17 +1,20 @@
-"""Tema oscuro: paleta de Qt y hoja de estilos (QSS)."""
+"""Tema oscuro con el rosa del logo como acento: paleta de Qt y hoja de estilos (QSS)."""
 
 from __future__ import annotations
 
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
-FONDO = "#0f1117"
-SUPERFICIE = "#171a23"
-TARJETA = "#1e2230"
-BORDE = "#2a2f3d"
-TEXTO = "#e6e8ee"
-TENUE = "#8b93a7"
-ACENTO = "#6d8bff"
+FONDO = "#0e0d12"
+SUPERFICIE = "#16141c"
+TARJETA = "#1e1b26"
+BORDE = "#2c2836"
+TEXTO = "#ece9f1"
+TENUE = "#958ea4"
+ACENTO = "#fa1360"  # El rosa del logo.
+ACENTO_CLARO = "#ff4785"
+ACENTO_APAGADO = "#5a1a35"
+SELECCION = "#2b1824"  # Fondo de lo seleccionado, teñido de acento.
 VERDE = "#22c55e"
 ROJO = "#ef4444"
 AMBAR = "#f59e0b"
@@ -22,9 +25,9 @@ QMainWindow, QWidget#pagina, QScrollArea, QScrollArea > QWidget > QWidget {{
     background: {FONDO};
 }}
 QWidget#lateral {{ background: {SUPERFICIE}; border-right: 1px solid {BORDE}; }}
-QLabel#marca {{ font-size: 14pt; font-weight: 700; }}
+QLabel#marca {{ font-size: 15pt; font-weight: 700; }}
 QLabel#seccion {{
-    color: #5d6579; font-size: 8pt; font-weight: 700; padding: 10px 6px 4px 6px;
+    color: #6b6479; font-size: 8pt; font-weight: 700; padding: 10px 6px 4px 6px;
 }}
 QLabel#titulo {{ font-size: 18pt; font-weight: 700; }}
 QLabel#subtitulo {{ font-size: 12pt; font-weight: 600; padding-top: 10px; }}
@@ -42,6 +45,7 @@ QFrame#tarjeta, QFrame#panel {{
 }}
 QFrame#tarjeta QLabel, QFrame#panel QLabel {{ background: transparent; border: none; }}
 QLabel#tarjeta_titulo {{ color: {TENUE}; font-size: 9pt; }}
+QLabel#tarjeta_icono {{ padding-right: 2px; }}
 QLabel#tarjeta_valor {{ font-size: 17pt; font-weight: 700; }}
 QLabel#tarjeta_detalle {{ font-size: 9pt; color: {TENUE}; }}
 QLabel#tarjeta_detalle[tono="positivo"] {{ color: {VERDE}; }}
@@ -54,7 +58,7 @@ QListWidget#navegacion::item {{
 }}
 QListWidget#navegacion::item:hover {{ background: {TARJETA}; color: {TEXTO}; }}
 QListWidget#navegacion::item:selected {{
-    background: #262c40; color: {TEXTO}; border-left: 3px solid {ACENTO}; font-weight: 600;
+    background: {SELECCION}; color: {TEXTO}; border-left: 3px solid {ACENTO}; font-weight: 600;
 }}
 
 QListWidget#partidos {{
@@ -63,19 +67,19 @@ QListWidget#partidos {{
 }}
 QListWidget#partidos::item {{ padding: 8px; border-radius: 6px; border-bottom: 1px solid {BORDE}; }}
 QListWidget#partidos::item:hover {{ background: {TARJETA}; }}
-QListWidget#partidos::item:selected {{ background: #262c40; color: {TEXTO}; }}
+QListWidget#partidos::item:selected {{ background: {SELECCION}; color: {TEXTO}; }}
 
 QPushButton {{
     background: {TARJETA}; border: 1px solid {BORDE}; border-radius: 8px; padding: 7px 14px;
 }}
-QPushButton:hover {{ border-color: {ACENTO}; }}
-QPushButton:pressed {{ background: #262c40; }}
-QPushButton:disabled {{ color: #555c6e; border-color: #23273300; }}
+QPushButton:hover {{ border-color: {ACENTO}; color: white; }}
+QPushButton:pressed {{ background: {SELECCION}; }}
+QPushButton:disabled {{ color: #5a5466; border-color: #23273300; }}
 QPushButton#primario {{ background: {ACENTO}; border: none; color: white; font-weight: 600; }}
-QPushButton#primario:hover {{ background: #849cff; }}
-QPushButton#primario:disabled {{ background: #2f3a66; color: #8b93a7; }}
+QPushButton#primario:hover {{ background: {ACENTO_CLARO}; }}
+QPushButton#primario:disabled {{ background: {ACENTO_APAGADO}; color: {TENUE}; }}
 QPushButton#peligro {{ background: #3a1518; border: 1px solid #7f1d1d; color: #fca5a5; }}
-QPushButton#peligro:disabled {{ background: {TARJETA}; border-color: {BORDE}; color: #555c6e; }}
+QPushButton#peligro:disabled {{ background: {TARJETA}; border-color: {BORDE}; color: #5a5466; }}
 
 QLineEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QDateEdit, QComboBox {{
     background: {SUPERFICIE}; border: 1px solid {BORDE}; border-radius: 6px; padding: 5px 8px;
@@ -84,14 +88,14 @@ QLineEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QDateEdit, QComboBox {{
 QLineEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus,
 QDateEdit:focus, QComboBox:focus {{ border-color: {ACENTO}; }}
 QLineEdit:disabled, QSpinBox:disabled, QComboBox:disabled, QDoubleSpinBox:disabled {{
-    color: #555c6e;
+    color: #5a5466;
 }}
 QComboBox QAbstractItemView {{
-    background: {TARJETA}; border: 1px solid {BORDE}; selection-background-color: #262c40;
+    background: {TARJETA}; border: 1px solid {BORDE}; selection-background-color: {SELECCION};
 }}
 QCheckBox, QRadioButton {{ spacing: 8px; background: transparent; }}
 QCheckBox::indicator, QRadioButton::indicator {{
-    width: 14px; height: 14px; border: 1px solid #4a5163; background: {SUPERFICIE};
+    width: 14px; height: 14px; border: 1px solid #4d475a; background: {SUPERFICIE};
 }}
 QCheckBox::indicator {{ border-radius: 4px; }}
 QRadioButton::indicator {{ border-radius: 8px; }}
@@ -102,8 +106,8 @@ QCheckBox::indicator:checked, QRadioButton::indicator:checked {{
 QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {{ border-color: {BORDE}; }}
 
 QTableView {{
-    background: {SUPERFICIE}; alternate-background-color: #1a1e29; border: 1px solid {BORDE};
-    border-radius: 8px; gridline-color: transparent; selection-background-color: #262c40;
+    background: {SUPERFICIE}; alternate-background-color: #1a1820; border: 1px solid {BORDE};
+    border-radius: 8px; gridline-color: transparent; selection-background-color: {SELECCION};
 }}
 QHeaderView {{ background: {TARJETA}; border: none; border-bottom: 1px solid {BORDE}; }}
 QHeaderView::section {{
@@ -115,7 +119,7 @@ QTableCornerButton::section {{ background: {TARJETA}; border: none; }}
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 0; }}
 QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 0; }}
 QScrollBar::handle {{ background: {BORDE}; border-radius: 5px; min-height: 24px; min-width: 24px; }}
-QScrollBar::handle:hover {{ background: #3b4254; }}
+QScrollBar::handle:hover {{ background: #3d3848; }}
 QScrollBar::add-line, QScrollBar::sub-line, QScrollBar::add-page, QScrollBar::sub-page {{
     background: none; border: none; width: 0; height: 0;
 }}

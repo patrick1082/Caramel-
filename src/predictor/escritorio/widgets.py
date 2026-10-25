@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from predictor.escritorio import tema
+from predictor.escritorio import iconos, tema
 
 _COLUMNAS_CON_SIGNO = ("Resultado", "ROI", "EV")
 _COLORES_TEXTO = {
@@ -174,7 +174,7 @@ def aviso(contenido: str = "") -> QLabel:
 class Tarjeta(QFrame):
     """Métrica: título pequeño, valor grande y un detalle opcional coloreado."""
 
-    def __init__(self, titulo: str, valor: str = "—") -> None:
+    def __init__(self, titulo: str, valor: str = "—", icono: str | None = None) -> None:
         super().__init__()
         self.setObjectName("tarjeta")
         # En una fila, todas las tarjetas toman el alto de la más alta.
@@ -186,8 +186,19 @@ class Tarjeta(QFrame):
         self.valor = texto(valor, "tarjeta_valor", ajustar=False)
         self.detalle = texto("", "tarjeta_detalle")
         self.detalle.hide()
-        for widget in (self.titulo, self.valor, self.detalle):
-            disposicion.addWidget(widget)
+        if icono is None:
+            disposicion.addWidget(self.titulo)
+        else:
+            cabecera = QHBoxLayout()
+            cabecera.setSpacing(6)
+            imagen = QLabel()
+            imagen.setObjectName("tarjeta_icono")
+            imagen.setPixmap(iconos.pixmap(icono, tema.ACENTO, 14))
+            cabecera.addWidget(imagen)
+            cabecera.addWidget(self.titulo, 1)
+            disposicion.addLayout(cabecera)
+        disposicion.addWidget(self.valor)
+        disposicion.addWidget(self.detalle)
 
     def fijar(self, valor: str, detalle: str = "", tono: str = "") -> None:
         self.valor.setText(valor)

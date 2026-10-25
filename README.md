@@ -1,6 +1,6 @@
-# Predictor de apuestas
+# Caramel
 
-Herramienta personal para NBA y fútbol europeo (Premier League, Serie A, Bundesliga, LaLiga, Ligue 1).
+Predictor de apuestas personal para NBA y fútbol europeo (Premier League, Serie A, Bundesliga, LaLiga, Ligue 1).
 Requisitos en [`.claude/prds/predictor-apuestas.prd.md`](.claude/prds/predictor-apuestas.prd.md).
 
 **Hito 1 — Bitácora y fondo**: registro de apuestas colocadas y no colocadas, liquidación,
@@ -25,6 +25,16 @@ con acierto estimado de 55 % o más, escrita en palabras ("Gana Arsenal", "Más 
 las que pasan el umbral se elige la de mayor EV. Probable no es lo mismo que rentable: un EV
 negativo indica que la cuota paga menos de lo que vale el riesgo.
 
+Cada sugerencia indica qué **% de la banca** apostar y el **monto** con el saldo disponible:
+
+- **Valor confirmado**: ¼ de Kelly, `(p·c − 1)/(c − 1)`, con la probabilidad más prudente (la menor
+  entre el modelo y el mercado), entre 1 % y 3 %.
+- **Solo modelo**: 0,5 % (esa estrategia perdió dinero en el backtest).
+- **Sin valor**: 1 %.
+- Nunca más de 3 % en una apuesta, para que una racha mala no se lleve la banca. El monto se
+  redondea hacia abajo a $100; si no llega a $100 queda vacío (no apostar). La página muestra
+  también cuánto de la banca se arriesga si se apuestan todas.
+
 ## Instalación
 
 ```bash
@@ -37,7 +47,7 @@ python -m venv .venv
 Es una aplicación de escritorio (Qt, tema oscuro):
 
 ```bash
-.venv/Scripts/predictor          # o: .venv/Scripts/python -m predictor.escritorio
+.venv/Scripts/caramel            # o: .venv/Scripts/python -m predictor.escritorio
 ```
 
 La barra lateral lleva a cada página (Partidos, Modelo, Resumen, Nueva apuesta, Pendientes,

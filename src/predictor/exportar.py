@@ -6,6 +6,7 @@ from io import BytesIO
 
 import pandas as pd
 
+from predictor import stake
 from predictor.bitacora import Metricas, Resumen
 from predictor.cartelera import Analisis, FilaComparacion, Oportunidad, Sugerencia
 from predictor.estadisticas import Estadisticas, Promedios
@@ -119,6 +120,8 @@ COLUMNAS_SUGERIDAS = (
     "Modelo (%)",
     "Mercado (%)",
     "EV estimado (%)",
+    "Banca (%)",
+    "Monto (CLP)",
 )
 
 COLUMNAS_CONTRASTE = ("Opinión", "Local (%)", "Empate (%)", "Visita (%)", "Favorito", "Marcador")
@@ -332,7 +335,8 @@ def describir_apuesta(partido: Partido, fila: FilaComparacion) -> str:
     return f"{fila.seleccion} {_linea(fila)}"
 
 
-def tabla_sugeridas(sugerencias: list[Sugerencia]) -> pd.DataFrame:
+def tabla_sugeridas(sugerencias: list[Sugerencia], saldo: int) -> pd.DataFrame:
+    """Una fila por sugerencia; el monto sale del saldo disponible (vacío si no alcanza)."""
     filas = [
         (
             s.partido.inicio.astimezone(ZONA_CHILE).strftime("%H:%M"),
@@ -345,10 +349,13 @@ def tabla_sugeridas(sugerencias: list[Sugerencia]) -> pd.DataFrame:
             _porcentaje(s.valoracion.prob_modelo),
             _porcentaje(s.valoracion.prob_mercado),
             _porcentaje(s.ev),
+            _porcentaje(s.stake),
+            stake.monto(saldo, s.stake) or None,
         )
         for s in sugerencias
     ]
-    return pd.DataFrame(filas, columns=COLUMNAS_SUGERIDAS)
+    # object: con algún monto vacío, pandas pasaría los CLP a float.
+    return pd.DataFrame(filas, columns=COLUMNAS_SUGERIDAS, dtype=object)
 
 
 _FUENTES_CONTRASTE = {

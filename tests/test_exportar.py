@@ -1,9 +1,11 @@
+from dataclasses import replace
 from datetime import date, datetime
 from decimal import Decimal
 from io import BytesIO
 
 from openpyxl import load_workbook
 
+from predictor import stake
 from predictor.cartelera import Analisis, FilaComparacion, Oportunidad, Sugerencia
 from predictor.estadisticas import calcular
 from predictor.evaluacion import TOTAL, MetricasFuente, ResultadoValor, cruzar, por_liga
@@ -409,7 +411,9 @@ def test_tabla_sugeridas():
     partido = Partido("p1", Deporte.FUTBOL, "Premier League", "Arsenal", "Everton", INICIO)
     valoracion = valorar(FILAS_1X2, _prediccion(), "Arsenal")[0]
 
-    tabla = tabla_sugeridas([Sugerencia(partido, valoracion, 0.5)])
+    sugerencia = Sugerencia(partido, valoracion, 0.5)
+    solo_modelo = Sugerencia(partido, replace(valoracion, valor=Valor.MODELO), 0.5)
+    tabla = tabla_sugeridas([sugerencia, solo_modelo], saldo=10_000)
 
     fila = tabla.iloc[0]
     assert (fila["Hora"], fila["Apuesta"], fila["Cuota"], fila["Casa"]) == (
@@ -419,3 +423,7 @@ def test_tabla_sugeridas():
         "Betano",
     )
     assert (fila["Acierto estimado (%)"], fila["EV estimado (%)"]) == (50.0, 15.0)
+    assert fila["Banca (%)"] == round(sugerencia.stake * 100, 2)
+    assert fila["Monto (CLP)"] == stake.monto(10_000, sugerencia.stake)
+    # Solo modelo: 0,5 % de $10.000 son $50, bajo el mínimo de $100.
+    assert (tabla.iloc[1]["Banca (%)"], tabla.iloc[1]["Monto (CLP)"]) == (0.5, None)

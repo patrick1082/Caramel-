@@ -4,6 +4,7 @@ from decimal import Decimal
 import pytest
 from fakes import DATOS, ObtenerFalso, respuesta_odds
 
+from predictor import stake
 from predictor.cartelera import Cartelera, _pronostico_mercado
 from predictor.evaluacion import TOTAL
 from predictor.fuentes import espn, football_data
@@ -478,6 +479,7 @@ def test_sugeridas_da_a_lo_sumo_una_apuesta_probable_por_partido(cartelera_nba, 
     assert ids and len(ids) == len(set(ids)) and set(ids) <= {p.id for p in partidos}
     assert all(s.prob >= 0.55 for s in cartelera_nba.sugeridas(partidos))
     assert [s.partido.inicio for s in sugeridas] == sorted(s.partido.inicio for s in sugeridas)
+    assert all(stake.SOLO_MODELO <= s.stake <= stake.TOPE for s in sugeridas)
     for s in sugeridas:
         assert s.cuota == (s.valoracion.fila.betano or s.valoracion.fila.promedio)
         assert s.de_betano == (s.valoracion.fila.betano is not None)

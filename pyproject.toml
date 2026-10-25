@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "predictor"
 version = "0.1.0"
-description = "Predictor de apuestas NBA y fútbol europeo con bitácora de fondo"
+description = "Caramel: predictor de apuestas NBA y fútbol europeo con bitácora de fondo"
 requires-python = ">=3.12"
 dependencies = [
     "PySide6>=6.7",
@@ -17,6 +17,7 @@ dependencies = [
 ]
 
 [project.gui-scripts]
+caramel = "predictor.escritorio.ventana:main"
 predictor = "predictor.escritorio.ventana:main"
 
 [project.optional-dependencies]
@@ -29,6 +30,9 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"predictor.escritorio" = ["recursos/*.png", "recursos/iconos/*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

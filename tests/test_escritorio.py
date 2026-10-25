@@ -124,7 +124,7 @@ def test_todas_las_paginas_cargan(ventana):
     assert ventana.saldo.valor.text() == "$10.000"
 
 
-@pytest.mark.parametrize("nombre", sorted(set(iconos._DIBUJOS) - {"vacio"}))
+@pytest.mark.parametrize("nombre", [n for n in iconos.NOMBRES if n != "vacio"])
 def test_cada_icono_dibuja_algo(qtbot, nombre):
     imagen = iconos.pixmap(nombre, tema.TEXTO).toImage()
     assert imagen.width() == 18 * iconos.ESCALA
@@ -133,6 +133,27 @@ def test_cada_icono_dibuja_algo(qtbot, nombre):
         for x in range(imagen.width())
         for y in range(imagen.height())
     )
+
+
+def test_el_logo_es_el_icono_de_la_ventana(ventana):
+    assert not ventana.windowIcon().isNull()
+    assert {t.width() for t in iconos.logo().availableSizes()} >= {16, 32, 256}
+
+
+def test_un_icono_se_tine_con_el_color_pedido(qtbot):
+    imagen = iconos.pixmap("partidos", tema.ACENTO).toImage()
+    pintados = [
+        imagen.pixelColor(x, y)
+        for x in range(imagen.width())
+        for y in range(imagen.height())
+        if imagen.pixelColor(x, y).alpha() == 255
+    ]
+    assert pintados and all(c.name() == tema.ACENTO for c in pintados)
+
+
+def test_falta_un_recurso(qtbot, tmp_path):
+    with pytest.raises(FileNotFoundError, match="Falta el recurso"):
+        iconos._imagen(tmp_path / "no_existe.png")
 
 
 def test_lista_partidos_y_muestra_el_detalle(ventana):
@@ -464,5 +485,6 @@ def test_valor_del_dia_muestra_las_apuestas_sugeridas(ventana):
     sugerencia = Sugerencia(PARTIDO, Valoracion(fila, 0.6, 0.56, None, Valor.NINGUNO), 0.58)
     detalle.mostrar_valor_del_dia([], [sugerencia])
     assert "Apuestas sugeridas  (1)" in _textos(detalle)
+    assert "Si apuestas todas, arriesgas 1.0% de la banca hoy." in _textos(detalle)
     tabla = detalle.findChildren(Tabla)[0]
     assert tabla.model().rowCount() == 1

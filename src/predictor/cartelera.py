@@ -10,7 +10,7 @@ from decimal import Decimal
 from statistics import fmean
 from zoneinfo import ZoneInfo
 
-from predictor import estadisticas, evaluacion, factores, valor
+from predictor import estadisticas, evaluacion, factores, stake, valor
 from predictor.estadisticas import Estadisticas
 from predictor.evaluacion import (
     MINIMO_BACKTEST,
@@ -121,6 +121,11 @@ class Sugerencia:
     @property
     def ev(self) -> float:
         return valor.ev(self.prob, self.cuota)
+
+    @property
+    def stake(self) -> float:
+        """Parte de la banca a apostar (0–1), según la marca de valor."""
+        return stake.fraccion(self.valoracion, self.cuota)
 
 
 def descargar_jugadores(liga: str, hoy: date) -> list[Jugador]:

@@ -30,7 +30,7 @@ from predictor.escritorio.bitacora import (
     PaginaResumen,
 )
 from predictor.escritorio.comun import Contexto, clp
-from predictor.escritorio.iconos import icono, pixmap
+from predictor.escritorio.iconos import icono, logo, pixmap
 from predictor.escritorio.modelo import PaginaConfiguracion, PaginaModelo
 from predictor.escritorio.partidos import PaginaPartidos
 from predictor.escritorio.widgets import Tarjeta, texto
@@ -50,16 +50,16 @@ _ICONOS = (
 
 
 def _marca() -> QHBoxLayout:
-    logo = QLabel()
-    logo.setPixmap(pixmap("marca", tam=30))
+    imagen = QLabel()
+    imagen.setPixmap(pixmap("marca", tam=40))
     nombres = QVBoxLayout()
     nombres.setSpacing(0)
-    nombres.addWidget(texto("Predictor", "marca"))
+    nombres.addWidget(texto("Caramel", "marca"))
     nombres.addWidget(texto("NBA y fútbol europeo", "tenue"))
     fila = QHBoxLayout()
     fila.setContentsMargins(4, 0, 0, 14)
     fila.setSpacing(10)
-    fila.addWidget(logo)
+    fila.addWidget(imagen)
     fila.addLayout(nombres, 1)
     return fila
 
@@ -68,7 +68,8 @@ class Ventana(QMainWindow):
     def __init__(self, contexto: Contexto) -> None:
         super().__init__()
         self.contexto = contexto
-        self.setWindowTitle("Predictor de apuestas")
+        self.setWindowTitle("Caramel")
+        self.setWindowIcon(logo())
         self.resize(1440, 900)
 
         self.partidos = PaginaPartidos(contexto)
@@ -101,7 +102,8 @@ class Ventana(QMainWindow):
         self.navegacion.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         columna.addWidget(self.navegacion, 1)
         columna.addWidget(texto("FONDO", "seccion"))
-        self.saldo, self.en_juego = Tarjeta("Saldo disponible"), Tarjeta("En juego")
+        self.saldo = Tarjeta("Saldo disponible", icono="saldo")
+        self.en_juego = Tarjeta("En juego", icono="en_juego")
         columna.addWidget(self.saldo)
         columna.addWidget(self.en_juego)
         self.exportar = QPushButton(icono("exportar", tema.TEXTO), "  Exportar a Excel")
@@ -211,8 +213,14 @@ class Ventana(QMainWindow):
 
 
 def main() -> int:
+    if sys.platform == "win32":
+        # Sin un id propio, Windows agrupa la ventana bajo python.exe y muestra su ícono.
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("caramel.predictor")
     app = QApplication.instance() or QApplication(sys.argv)
-    app.setApplicationName("Predictor de apuestas")
+    app.setApplicationName("Caramel")
+    app.setWindowIcon(logo())
     tema.aplicar(app)
     contexto = Contexto.desde_entorno()
     ventana = Ventana(contexto)

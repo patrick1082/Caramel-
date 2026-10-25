@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from predictor import stake
 from predictor.cartelera import Cartelera
 from predictor.escritorio import tema
 from predictor.escritorio.comun import AVISO_VALOR, Contexto, hora_chile, pct
@@ -122,9 +123,23 @@ class DetallePartido(QWidget):
                 "que vale el riesgo, aunque la apuesta sea probable."
             )
         )
+        self.disposicion.addWidget(
+            tenue(
+                f"Banca: con valor confirmado, ¼ de Kelly con la probabilidad más prudente (entre "
+                f"{stake.PISO:.0%} y {stake.TOPE:.0%}); solo modelo, {stake.SOLO_MODELO:.1%}; "
+                f"sin valor, {stake.SIN_VALOR:.0%}. Nunca más de {stake.TOPE:.0%} en una apuesta: "
+                "así una racha mala no se lleva la banca. El monto usa el saldo disponible, "
+                f"redondeado hacia abajo a ${stake.REDONDEO}; vacío si no alcanza el mínimo."
+            )
+        )
+        if sugeridas:
+            total = sum(s.stake for s in sugeridas)
+            self.disposicion.addWidget(
+                tenue(f"Si apuestas todas, arriesgas {total:.1%} de la banca hoy.")
+            )
         if sugeridas:
             tabla = Tabla()
-            tabla.fijar(tabla_sugeridas(sugeridas))
+            tabla.fijar(tabla_sugeridas(sugeridas, self._contexto.bitacora.resumen().saldo))
             self.disposicion.addWidget(tabla)
         else:
             self.disposicion.addWidget(
@@ -327,7 +342,7 @@ class PaginaPartidos(QWidget):
             caja.setSuffix(" h")
         self.ligas = QComboBox()
         self.ligas.addItems(list(_FILTROS))
-        self.boton_actualizar = QPushButton(icono("actualizar", "white"), "Actualizar")
+        self.boton_actualizar = QPushButton(icono("actualizar", "white"), "  Actualizar")
         self.boton_actualizar.setObjectName("primario")
         self.boton_actualizar.clicked.connect(self.actualizar)
         self.creditos = texto("", "tenue", ajustar=False)
@@ -398,7 +413,7 @@ class PaginaPartidos(QWidget):
         creditos = cartelera.creditos_restantes
         self.creditos.setText(f"Créditos The Odds API: {'—' if creditos is None else creditos}")
         costo = costo_creditos(len(vencidas)) if cartelera.tiene_clave else 0
-        self.boton_actualizar.setText(f"Actualizar ({costo} créditos)")
+        self.boton_actualizar.setText(f"  Actualizar ({costo} créditos)")
         actualizadas = [m for liga in ligas if (m := cartelera.cuotas_actualizadas(liga))]
         self.estado.setText(
             f"Cuotas consultadas por última vez a las {hora_chile(min(actualizadas))} "
@@ -486,7 +501,7 @@ class PaginaPartidos(QWidget):
     def actualizar(self) -> None:
         cartelera, ligas = self._contexto.cartelera, self.ligas_elegidas
         self.boton_actualizar.setEnabled(False)
-        self.boton_actualizar.setText("Descargando…")
+        self.boton_actualizar.setText("  Descargando…")
         self.ocupada.emit(True)
         self._tarea = lanzar(lambda: actualizar(cartelera, ligas), self._terminado, self._fallo)
 
