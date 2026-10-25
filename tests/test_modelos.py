@@ -213,6 +213,76 @@ def test_prediccion_invalida(cambios, mensaje):
         _prediccion(**cambios)
 
 
+def test_apuesta_guarda_probabilidad_y_marca_de_valor(crear_apuesta):
+    from predictor.modelos import Valor
+
+    apuesta = crear_apuesta(prob_modelo=0.55, valor="confirmado")
+
+    assert apuesta.valor is Valor.CONFIRMADO
+    assert Valor.MODELO.etiqueta == "⚠️ Solo modelo"
+    assert crear_apuesta().valor is Valor.NINGUNO
+    with pytest.raises(ValueError, match="entre 0 y 1"):
+        crear_apuesta(prob_modelo=1.2)
+
+
+def test_resultado_historico_valida_cuotas():
+    with pytest.raises(ValueError, match="mayores a 1.00"):
+        ResultadoHistorico("LaLiga", "2526", date(2026, 1, 1), "A", "B", 1, 0, cuotas=(2, 1, 3))
+
+
+def _propia(**cambios):
+    from predictor.modelos import PrediccionPropia
+
+    datos = dict(
+        partido_id="x",
+        liga="Premier League",
+        local="Aston Villa",
+        visitante="Manchester City",
+        inicio=datetime(2026, 10, 24, 11, 30, tzinfo=UTC),
+        ganador="visitante",
+        creada=datetime(2026, 10, 23, 15, tzinfo=UTC),
+    )
+    return PrediccionPropia(**(datos | cambios))
+
+
+def test_prediccion_propia_valida():
+    from predictor.modelos import Ganador
+
+    assert _propia().ganador is Ganador.VISITANTE
+    assert _propia(ganador="empate", marcador_local=1, marcador_visitante=1).marcador_local == 1
+
+
+@pytest.mark.parametrize(
+    "cambios, mensaje",
+    [
+        ({"liga": "NBA", "ganador": "empate"}, "no hay empate"),
+        ({"marcador_local": 2}, "dos valores"),
+        ({"marcador_local": -1, "marcador_visitante": 2}, "negativo"),
+        ({"marcador_local": 2, "marcador_visitante": 1}, "no coincide"),
+        ({"creada": datetime(2026, 10, 23)}, "zona horaria"),
+        ({"ganador": "nadie"}, "nadie"),
+    ],
+)
+def test_prediccion_propia_invalida(cambios, mensaje):
+    with pytest.raises(ValueError, match=mensaje):
+        _propia(**cambios)
+
+
+def test_pronostico3_favorito_y_validacion():
+    from predictor.modelos import Fuente, Ganador, Pronostico3
+
+    ahora = datetime(2026, 10, 24, tzinfo=UTC)
+    futbol = Pronostico3("x", "mercado", 0.3, 0.4, 0.3, ahora)
+    nba = Pronostico3("y", Fuente.ESPN, 0.805, None, 0.195, ahora)
+
+    assert (futbol.fuente, futbol.favorito) == (Fuente.MERCADO, Ganador.EMPATE)
+    assert (nba.favorito, Fuente.ESPN.etiqueta) == (Ganador.LOCAL, "ESPN BPI")
+    with pytest.raises(ValueError, match="sumar 1"):
+        Pronostico3("x", "modelo", 0.5, None, 0.6, ahora)
+    with pytest.raises(ValueError, match="zona horaria"):
+        Pronostico3("x", "modelo", 0.5, None, 0.5, datetime(2026, 10, 24))
+
+
 def test_jugador_requiere_nombre():
     from predictor.modelos import Jugador
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Callable
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -14,15 +15,20 @@ from predictor.bitacora import Bitacora
 from predictor.cartelera import Cartelera
 from predictor.exportar import (
     exportar_excel,
+    resumen_contraste,
     tabla_apuestas,
+    tabla_backtest_valor,
     tabla_cara_a_cara,
+    tabla_contraste,
     tabla_cuotas,
     tabla_estadisticas,
     tabla_evaluacion,
+    tabla_fuentes,
     tabla_jugadores,
     tabla_metricas,
     tabla_movimientos,
     tabla_predicciones,
+    tabla_valor_del_dia,
 )
 from predictor.fuentes.odds_api import ClienteOddsApi, costo_creditos
 from predictor.ligas import ZONA_CHILE
@@ -31,11 +37,23 @@ from predictor.modelos import (
     Apuesta,
     Deporte,
     Estado,
+    Ganador,
+    Mercado,
     Movimiento,
+    Partido,
     Prediccion,
     TipoMovimiento,
+    Valor,
 )
 from predictor.repositorio import Repositorio
+from predictor.valor import Umbrales, Valoracion, clasificar
+
+AVISO_VALOR = (
+    "✅ Confirmado: el modelo ve valor en la cuota de Betano y el mercado (Pinnacle sin margen) "
+    "no lo contradice. ⚠️ Solo modelo: el mercado no está de acuerdo; en el backtest de fútbol "
+    "2025-26 esa estrategia perdió dinero. Las cuotas son de Betano UK: confirma la de Betano "
+    "Chile antes de apostar. El valor no es una garantía."
+)
 
 RUTA_BD = Path(os.environ.get("PREDICTOR_DB", "data/bitacora.db"))
 
@@ -77,8 +95,26 @@ def ejecutar(mensaje: str, accion: Callable, *args, **kwargs) -> None:
         st.rerun()
 
 
-def registrar(bitacora: Bitacora, **datos) -> None:
+def registrar(
+    bitacora: Bitacora, valoracion: Valoracion | None, umbrales: Umbrales, **datos
+) -> None:
+    """Registra la apuesta; si viene de la cartelera, recalcula el valor con la cuota escrita."""
+    if valoracion is not None:
+        datos["prob_modelo"] = valoracion.prob_modelo
+        datos["valor"] = clasificar(
+            datos["cuota"], valoracion.prob_modelo, valoracion.prob_mercado, umbrales
+        )
     bitacora.registrar_apuesta(Apuesta(**datos))
+
+
+def describir_fila(valoracion: Valoracion) -> tuple[str, str]:
+    """Mercado y selección de una fila de cuotas, como se escriben en la bitácora."""
+    fila = valoracion.fila
+    mercado = fila.mercado.etiqueta
+    if fila.linea is not None:
+        linea = f"{fila.linea:+g}" if fila.mercado is Mercado.HANDICAP else f"{fila.linea:g}"
+        mercado += f" {linea}"
+    return mercado, "Empate" if fila.seleccion == "Draw" else fila.seleccion
 
 
 def actualizar(cartelera: Cartelera, ligas: list[str]) -> None:
@@ -87,7 +123,14 @@ def actualizar(cartelera: Cartelera, ligas: list[str]) -> None:
             cartelera.actualizar_cuotas(ligas)
         cartelera.actualizar_historial(ligas)
         _, errores = cartelera.actualizar_jugadores(ligas)
+        _, errores_bpi = cartelera.actualizar_bpi() if "NBA" in ligas else ([], {})
     st.session_state["errores_jugadores"] = errores
+    st.session_state["errores_bpi"] = errores_bpi
+
+
+def sin_markdown(texto: str) -> str:
+    """Escapa el markdown de textos de fuentes externas (nombres y lesiones)."""
+    return re.sub(r"([\\`*_{}\[\]()<>#+\-.!|~$])", r"\\\1", texto)
 
 
 def hora_chile(momento: datetime) -> str:
@@ -126,7 +169,70 @@ def mostrar_prediccion(prediccion: Prediccion, empezado: bool) -> None:
     else:
         columnas[-1].metric("Total esperado", total)
     if prediccion.factores:
-        st.markdown("\n".join(f"- {factor}" for factor in prediccion.factores))
+        st.markdown("\n".join(f"- {sin_markdown(factor)}" for factor in prediccion.factores))
+
+
+def mostrar_contraste(
+    cartelera: Cartelera, partido: Partido, prediccion: Prediccion | None, empezado: bool
+) -> None:
+    """Mi predicción, el modelo, ESPN BPI y el mercado lado a lado, y el formulario de la mía."""
+    propia = cartelera.prediccion_propia(partido)
+    pronosticos = cartelera.pronosticos(partido, prediccion)
+    st.markdown("**Contraste**" + (" (congelado al inicio)" if empezado else ""))
+    if propia is not None or pronosticos:
+        st.dataframe(
+            tabla_contraste(partido.local, partido.visitante, propia, pronosticos, prediccion),
+            hide_index=True,
+            width="stretch",
+        )
+        if linea := resumen_contraste(partido.local, partido.visitante, propia, pronosticos):
+            st.caption(sin_markdown(linea))
+    with st.form(f"propia_{partido.id}"):
+        opciones = [Ganador.LOCAL, Ganador.VISITANTE]
+        if partido.deporte is not Deporte.NBA:
+            opciones.insert(1, Ganador.EMPATE)
+        nombres = {
+            Ganador.LOCAL: partido.local,
+            Ganador.EMPATE: "Empate",
+            Ganador.VISITANTE: partido.visitante,
+        }
+        col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+        ganador = col1.radio(
+            "Mi predicción",
+            opciones,
+            index=opciones.index(propia.ganador) if propia else 0,
+            format_func=nombres.__getitem__,
+            horizontal=True,
+            disabled=empezado,
+        )
+        con_marcador = col2.checkbox(
+            "Con marcador",
+            value=propia is not None and propia.marcador_local is not None,
+            disabled=empezado,
+        )
+        goles_local = col3.number_input(
+            partido.local,
+            min_value=0,
+            value=(propia.marcador_local or 0) if propia else 0,
+            disabled=empezado,
+        )
+        goles_visitante = col4.number_input(
+            partido.visitante,
+            min_value=0,
+            value=(propia.marcador_visitante or 0) if propia else 0,
+            disabled=empezado,
+        )
+        nota = st.text_input("Nota", value=propia.nota if propia else "", disabled=empezado)
+        if st.form_submit_button("Guardar mi predicción", disabled=empezado):
+            ejecutar(
+                "Predicción guardada",
+                cartelera.guardar_prediccion_propia,
+                partido,
+                ganador,
+                int(goles_local) if con_marcador else None,
+                int(goles_visitante) if con_marcador else None,
+                nota,
+            )
 
 
 st.set_page_config(page_title="Predictor de apuestas", page_icon="📒", layout="wide")
@@ -147,6 +253,7 @@ with st.sidebar:
             resumen,
             obtener_repositorio().listar_predicciones(),
             cartelera.evaluadas(),
+            cartelera.evaluacion_por_fuente(),
         ),
         file_name=f"bitacora_{date.today():%Y%m%d}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -207,24 +314,41 @@ with tab_partidos:
         )
     for liga, error in st.session_state.get("errores_jugadores", {}).items():
         st.warning(f"No se pudieron actualizar los jugadores de {liga}: {error}")
+    for dia, error in st.session_state.get("errores_bpi", {}).items():
+        st.warning(f"No se pudo actualizar el ESPN BPI del {dia}: {error}")
 
     partidos = cartelera.partidos(dia, desde_hora, hasta_hora, ligas) if ligas else []
     if not partidos:
         st.info("No hay partidos guardados para este filtro. Prueba con Actualizar.")
+    else:
+        st.subheader("Valor del día")
+        oportunidades = cartelera.valor_del_dia(partidos)
+        if oportunidades:
+            st.dataframe(tabla_valor_del_dia(oportunidades), hide_index=True, width="stretch")
+        else:
+            st.caption("Ninguna cuota de Betano con valor en los partidos por empezar.")
+        st.caption(AVISO_VALOR)
     ahora = datetime.now(UTC)
     for partido in partidos:
         etiqueta = f"{hora_chile(partido.inicio)} · {partido.liga} · {partido.nombre}"
-        if partido.inicio <= ahora:
+        empezado = partido.inicio <= ahora
+        if empezado:
             etiqueta += " · en curso"
         with st.expander(etiqueta):
             prediccion = cartelera.predecir(partido)
             if prediccion is not None:
-                mostrar_prediccion(prediccion, partido.inicio <= ahora)
+                mostrar_prediccion(prediccion, empezado)
             else:
                 st.caption("Sin historial suficiente para que el modelo prediga este partido.")
+            mostrar_contraste(cartelera, partido, prediccion, empezado)
             filas = cartelera.comparar(partido)
             if filas:
-                st.dataframe(tabla_cuotas(filas, prediccion), hide_index=True, width="stretch")
+                st.markdown("**Cuotas**")
+                st.dataframe(
+                    tabla_cuotas(filas, prediccion, cartelera.valorar(partido, prediccion)),
+                    hide_index=True,
+                    width="stretch",
+                )
             else:
                 st.caption("Sin cuotas para este partido.")
             jugadores_local, jugadores_visitante = cartelera.jugadores(partido)
@@ -267,12 +391,33 @@ with tab_modelo:
         )
     else:
         st.info("Aún no hay predicciones con resultado. Se miden tras actualizar el historial.")
+    st.subheader("Por opinión")
+    fuentes = cartelera.evaluacion_por_fuente()
+    if fuentes:
+        st.caption(
+            "Acierto del favorito de cada opinión en los partidos jugados. La mía no tiene "
+            "Brier porque solo elige ganador."
+        )
+        st.dataframe(tabla_fuentes(fuentes), hide_index=True, width="stretch")
+    else:
+        st.info("Aún no hay opiniones guardadas con resultado.")
     st.subheader("Backtest")
     if st.checkbox("Calcular backtest sobre el historial guardado (tarda unos segundos)"):
         with st.spinner("Recorriendo el historial…"):
             backtest = cartelera.backtest([liga for d in Deporte for liga in LIGAS[d]])
+            backtest_valor = cartelera.backtest_valor(LIGAS[Deporte.FUTBOL])
         st.caption("Cada fecha se predice solo con los partidos anteriores.")
         st.dataframe(tabla_evaluacion(backtest), hide_index=True, width="stretch")
+        st.markdown("**Estrategia de valor (fútbol)**")
+        st.caption(
+            "1 unidad a la cuota promedio previa cada vez que el modelo ve valor con los "
+            "umbrales de Configuración, frente a apostar siempre al favorito. Aproximación: "
+            "no usa la cuota de Betano ni la confirmación del mercado."
+        )
+        if backtest_valor:
+            st.dataframe(tabla_backtest_valor(backtest_valor), hide_index=True, width="stretch")
+        else:
+            st.info("El historial guardado no tiene cuotas. Actualiza el historial de fútbol.")
 
 with tab_resumen:
     capital = resumen.fondo_inicial + resumen.depositos - resumen.retiros
@@ -291,6 +436,16 @@ with tab_resumen:
     st.dataframe(tabla_metricas(resumen.por_deporte), hide_index=True, width="stretch")
     st.subheader("Por liga")
     st.dataframe(tabla_metricas(resumen.por_liga), hide_index=True, width="stretch")
+    st.subheader("Con valor vs. sin valor")
+    st.caption(
+        "La hipótesis del proyecto: ¿rinden más las apuestas que la app marcó con valor? "
+        "Incluye las no colocadas y solo cuenta las registradas desde la cartelera."
+    )
+    st.dataframe(
+        tabla_metricas({Valor(v).etiqueta: m for v, m in resumen.por_valor.items()}),
+        hide_index=True,
+        width="stretch",
+    )
 
     st.subheader("Apuestas no colocadas (hipotético)")
     nc = resumen.no_colocadas
@@ -300,17 +455,68 @@ with tab_resumen:
     col3.metric("ROI hipotético", pct(nc.roi))
 
 with tab_nueva:
-    deporte = st.selectbox("Deporte", list(Deporte), format_func=str)
+    hoy = datetime.now(ZONA_CHILE).date()
+    proximos = [p for p in cartelera.partidos(hoy) if p.inicio > datetime.now(UTC)]
+    origen = st.selectbox(
+        "Desde la cartelera (opcional)",
+        [None, *proximos],
+        format_func=lambda p: (
+            "— Escribir a mano —"
+            if p is None
+            else f"{hora_chile(p.inicio)} · {p.liga} · {p.nombre}"
+        ),
+        help="Partidos de hoy que aún no empiezan. Guarda la probabilidad del modelo y la "
+        "marca de valor para comparar el ROI con y sin valor.",
+    )
+    valoracion = None
+    if origen is not None:
+        valoraciones = [
+            v for v in cartelera.valorar(origen, cartelera.predecir(origen)) if v.fila.betano
+        ]
+        if valoraciones:
+            valoracion = st.selectbox(
+                "Cuota de Betano",
+                valoraciones,
+                format_func=lambda v: " · ".join(
+                    [*describir_fila(v), f"{v.fila.betano}", v.valor.etiqueta]
+                ),
+            )
+        else:
+            st.caption("Este partido no tiene cuotas de Betano guardadas.")
+    deporte = st.selectbox(
+        "Deporte",
+        list(Deporte),
+        index=list(Deporte).index(origen.deporte) if origen else 0,
+        format_func=str,
+        disabled=origen is not None,
+    )
+    mercado_origen, seleccion_origen = describir_fila(valoracion) if valoracion else ("", "")
     with st.form("nueva_apuesta", clear_on_submit=True):
         col1, col2 = st.columns(2)
-        liga = col1.selectbox("Liga", LIGAS[deporte])
-        fecha_evento = col2.date_input("Fecha del partido", value=date.today())
-        partido = st.text_input("Partido", placeholder="Lakers vs Celtics")
+        liga = col1.selectbox(
+            "Liga", LIGAS[deporte], index=LIGAS[deporte].index(origen.liga) if origen else 0
+        )
+        fecha_evento = col2.date_input(
+            "Fecha del partido",
+            value=origen.inicio.astimezone(ZONA_CHILE).date() if origen else date.today(),
+        )
+        partido = st.text_input(
+            "Partido", value=origen.nombre if origen else "", placeholder="Lakers vs Celtics"
+        )
         col1, col2 = st.columns(2)
-        mercado = col1.text_input("Mercado", placeholder="Ganador, Over/Under 2.5, Hándicap…")
-        seleccion = col2.text_input("Selección", placeholder="Lakers")
+        mercado = col1.text_input(
+            "Mercado", value=mercado_origen, placeholder="Ganador, Over/Under 2.5, Hándicap…"
+        )
+        seleccion = col2.text_input("Selección", value=seleccion_origen, placeholder="Lakers")
         col1, col2, col3 = st.columns(3)
-        cuota = col1.number_input("Cuota", min_value=1.01, value=1.80, step=0.01, format="%.2f")
+        cuota = col1.number_input(
+            "Cuota",
+            min_value=1.01,
+            value=float(valoracion.fila.betano) if valoracion else 1.80,
+            step=0.01,
+            format="%.2f",
+            help="Escribe la cuota real de Betano Chile: el valor se recalcula con ella.",
+        )
         monto = col2.number_input("Monto (CLP)", min_value=1, value=500, step=100)
         casa = col3.text_input("Casa", value="Betano")
         colocada = st.checkbox(
@@ -325,6 +531,8 @@ with tab_nueva:
                 "Apuesta registrada",
                 registrar,
                 bitacora,
+                valoracion,
+                cartelera.umbrales,
                 deporte=deporte,
                 liga=liga,
                 partido=partido,
@@ -424,6 +632,34 @@ with tab_config:
         )
         if st.form_submit_button("Guardar"):
             ejecutar("Fondo inicial actualizado", bitacora.fijar_fondo_inicial, int(fondo))
+    umbrales = cartelera.umbrales
+    with st.form("umbrales"):
+        st.markdown("**Apuestas de valor**")
+        col1, col2, col3 = st.columns(3)
+        ev_modelo = col1.number_input(
+            "EV mínimo del modelo (%)",
+            min_value=0.0,
+            max_value=100.0,
+            value=umbrales.modelo * 100,
+            step=1.0,
+        )
+        cuota_maxima = col2.number_input(
+            "Cuota máxima", min_value=1.01, value=umbrales.cuota_maxima, step=0.5
+        )
+        ev_mercado = col3.number_input(
+            "EV mínimo según el mercado para confirmar (%)",
+            min_value=0.0,
+            max_value=100.0,
+            value=umbrales.mercado * 100,
+            step=1.0,
+        )
+        if st.form_submit_button("Guardar umbrales"):
+            ejecutar(
+                "Umbrales actualizados",
+                lambda: cartelera.fijar_umbrales(
+                    Umbrales(ev_modelo / 100, cuota_maxima, ev_mercado / 100)
+                ),
+            )
     st.caption(f"Base de datos: `{RUTA_BD.resolve()}` (cámbiala con la variable PREDICTOR_DB)")
     estado_clave = "configurada" if cartelera.tiene_clave else "no configurada"
     st.caption(f"Clave de The Odds API (variable ODDS_API_KEY): {estado_clave}")

@@ -4,11 +4,21 @@ from decimal import Decimal
 import pytest
 from fakes import DATOS, ObtenerFalso, respuesta_odds
 
-from predictor.cartelera import Cartelera
+from predictor.cartelera import Cartelera, _pronostico_mercado
 from predictor.evaluacion import TOTAL
-from predictor.fuentes import football_data
+from predictor.fuentes import espn, football_data
 from predictor.fuentes.odds_api import ClienteOddsApi
-from predictor.modelos import Jugador, Mercado, ResultadoHistorico, Rol
+from predictor.modelos import (
+    Fuente,
+    Ganador,
+    Jugador,
+    Mercado,
+    Pronostico3,
+    ResultadoHistorico,
+    Rol,
+    Valor,
+)
+from predictor.valor import Umbrales
 
 VILLA_CITY = "aca5dd297dbee71f576f7641569fe578"
 
@@ -321,3 +331,180 @@ def test_evaluacion_y_backtest(cartelera_nba, reloj):
     assert cartelera_nba.backtest(["NBA"], minimo=10)[TOTAL].partidos == 0  # ya calculado
     cartelera_nba.actualizar_historial(["NBA"], forzar=True)
     assert cartelera_nba.backtest(["NBA"], minimo=10)[TOTAL].partidos > 0
+
+
+class BpiFalso:
+    """ESPN BPI del 23-10 (hora de Nueva York); falla mientras `error` tenga texto."""
+
+    def __init__(self):
+        self.dias: list[date] = []
+        self.error = ""
+
+    def __call__(self, dia):
+        self.dias.append(dia)
+        if self.error:
+            raise ValueError(self.error)
+        return [
+            espn.BpiNba(
+                "Milwaukee Bucks",
+                "Chicago Bulls",
+                datetime(2026, 10, 23, 20, 15, tzinfo=UTC),
+                0.7,
+                0.3,
+            ),
+            espn.BpiNba(
+                "Boston Celtics",
+                "New York Knicks",
+                datetime(2026, 10, 23, 23, 0, tzinfo=UTC),
+                0.6,
+                0.4,
+            ),
+            # Otro día y equipos cruzados: no corresponden a ningún partido guardado.
+            espn.BpiNba(
+                "Charlotte Hornets",
+                "Atlanta Hawks",
+                datetime(2026, 10, 25, 23, 0, tzinfo=UTC),
+                0.5,
+                0.5,
+            ),
+            espn.BpiNba(
+                "New York Knicks",
+                "Boston Celtics",
+                datetime(2026, 10, 23, 23, 0, tzinfo=UTC),
+                0.45,
+                0.55,
+            ),
+        ]
+
+
+def test_actualizar_bpi_empareja_partidos_y_reintenta_si_falla(repo, cartelera_nba, reloj):
+    bpi = cartelera_nba._descargar_bpi = BpiFalso()
+    bpi.error = "ESPN respondió con error 503 (partidos NBA)"
+
+    assert cartelera_nba.actualizar_bpi() == ([], {"2026-10-23": bpi.error})
+    assert repo.listar_pronosticos() == []
+
+    bpi.error = ""
+    assert cartelera_nba.actualizar_bpi() == ([date(2026, 10, 23)], {})
+    bucks = _bucks_bulls(cartelera_nba)
+    assert repo.pronosticos_de(bucks.id) == [
+        Pronostico3(bucks.id, Fuente.ESPN, 0.7, None, 0.3, reloj.momento)
+    ]
+    assert [p.prob_local for p in repo.listar_pronosticos()] == [0.7, 0.6]  # Hornets sin BPI
+
+    reloj.momento += timedelta(minutes=59)
+    assert cartelera_nba.actualizar_bpi() == ([], {})
+    assert cartelera_nba.actualizar_bpi(forzar=True) == ([date(2026, 10, 23)], {})
+    assert bpi.dias == [date(2026, 10, 23)] * 3
+
+
+def test_pronosticos_reune_modelo_mercado_y_espn_y_se_congelan(cartelera_nba, reloj):
+    cartelera_nba._descargar_bpi = BpiFalso()
+    cartelera_nba.actualizar_bpi()
+    partido = _bucks_bulls(cartelera_nba)
+    prediccion = cartelera_nba.predecir(partido)
+
+    pronosticos = cartelera_nba.pronosticos(partido)
+
+    assert list(pronosticos) == [Fuente.ESPN, Fuente.MERCADO, Fuente.MODELO]
+    modelo, mercado = pronosticos[Fuente.MODELO], pronosticos[Fuente.MERCADO]
+    assert (modelo.prob_local, modelo.prob_empate) == (prediccion.prob_local, None)
+    assert mercado.prob_empate is None
+    assert mercado.prob_local + mercado.prob_visitante == pytest.approx(1)
+    assert mercado.favorito is Ganador.VISITANTE  # el mercado real no ve a los Bucks del fixture
+
+    reloj.momento = partido.inicio
+    cartelera_nba._descargar_nba = _historial_nba(
+        ResultadoHistorico(
+            "NBA", "2026-27", date(2026, 10, 22), "Chicago Bulls", "Boston Celtics", 150, 80
+        )
+    )
+    cartelera_nba.actualizar_historial(["NBA"], forzar=True)
+    assert cartelera_nba.pronosticos(partido) == pronosticos
+
+
+def test_pronostico_del_mercado_en_futbol_sin_historial(cartelera):
+    cartelera.actualizar_cuotas(["Premier League"])
+    [villa_city] = cartelera.partidos(date(2026, 10, 24), 8, 9)
+
+    pronosticos = cartelera.pronosticos(villa_city)
+
+    assert list(pronosticos) == [Fuente.MERCADO]  # el modelo todavía no puede predecir
+    mercado = pronosticos[Fuente.MERCADO]
+    probs = (mercado.prob_local, mercado.prob_empate, mercado.prob_visitante)
+    assert sum(probs) == pytest.approx(1)
+    assert mercado.prob_local < 1 / 5.08  # Pinnacle 5.08 para Villa, sin el margen
+    assert mercado.favorito is Ganador.VISITANTE
+    sin_empate = [f for f in cartelera.comparar(villa_city) if f.seleccion != "Draw"]
+    assert _pronostico_mercado(villa_city, sin_empate, mercado.actualizada) is None
+
+
+def test_umbrales_por_defecto_y_guardados(cartelera):
+    assert cartelera.umbrales == Umbrales()
+
+    cartelera.fijar_umbrales(Umbrales(modelo=0.1, cuota_maxima=3.0, mercado=0.02))
+
+    assert cartelera.umbrales == Umbrales(modelo=0.1, cuota_maxima=3.0, mercado=0.02)
+
+
+def test_valorar_y_valor_del_dia_respetan_los_umbrales(cartelera_nba, reloj):
+    partidos = cartelera_nba.partidos(date(2026, 10, 23))
+    partido = _bucks_bulls(cartelera_nba)
+
+    valoraciones = cartelera_nba.valorar(partido, cartelera_nba.predecir(partido))
+
+    assert [v.fila for v in valoraciones] == cartelera_nba.comparar(partido)
+
+    cartelera_nba.fijar_umbrales(Umbrales(modelo=0.0, cuota_maxima=100.0))
+    oportunidades = cartelera_nba.valor_del_dia(partidos)
+    assert oportunidades and all(o.valoracion.valor is not Valor.NINGUNO for o in oportunidades)
+    evs = [o.valoracion.ev for o in oportunidades]
+    assert evs == sorted(evs, reverse=True) and min(evs) >= 0
+    assert {o.partido.id for o in oportunidades} <= {p.id for p in partidos}
+
+    cartelera_nba.fijar_umbrales(Umbrales(cuota_maxima=1.01))
+    assert cartelera_nba.valor_del_dia(partidos) == []
+    cartelera_nba.fijar_umbrales(Umbrales(modelo=0.0, cuota_maxima=100.0))
+    reloj.momento = datetime(2026, 10, 24, tzinfo=UTC)  # ya empezaron todos
+    assert cartelera_nba.valor_del_dia(partidos) == []
+
+
+def test_prediccion_propia_se_reemplaza_y_se_congela_al_inicio(cartelera_nba, reloj):
+    partido = _bucks_bulls(cartelera_nba)
+    assert cartelera_nba.prediccion_propia(partido) is None
+
+    cartelera_nba.guardar_prediccion_propia(partido, "visitante", nota="  sin Giannis ")
+    propia = cartelera_nba.guardar_prediccion_propia(partido, Ganador.LOCAL, 118, 104)
+
+    assert cartelera_nba.prediccion_propia(partido) == propia
+    assert (propia.ganador, propia.marcador_local, propia.nota) == (Ganador.LOCAL, 118, "")
+    assert propia.creada == reloj.momento and propia.liga == "NBA"
+    with pytest.raises(ValueError, match="no hay empate"):
+        cartelera_nba.guardar_prediccion_propia(partido, "empate")
+
+    reloj.momento = partido.inicio
+    with pytest.raises(ValueError, match="ya empezó"):
+        cartelera_nba.guardar_prediccion_propia(partido, "visitante")
+    assert cartelera_nba.prediccion_propia(partido) == propia
+
+
+def test_evaluacion_por_fuente_y_backtest_de_valor(cartelera_nba, reloj):
+    cartelera_nba._descargar_bpi = BpiFalso()
+    cartelera_nba.actualizar_bpi()
+    partido = _bucks_bulls(cartelera_nba)
+    cartelera_nba.pronosticos(partido, cartelera_nba.predecir(partido))
+    cartelera_nba.guardar_prediccion_propia(partido, Ganador.VISITANTE)
+    assert cartelera_nba.evaluacion_por_fuente() == {}
+
+    reloj.momento += timedelta(days=1)
+    cartelera_nba._descargar_nba = _historial_nba(
+        ResultadoHistorico(
+            "NBA", "2026-27", date(2026, 10, 23), "Milwaukee Bucks", "Chicago Bulls", 120, 100
+        )
+    )
+    cartelera_nba.actualizar_historial(["NBA"], forzar=True)
+
+    metricas = cartelera_nba.evaluacion_por_fuente()
+    assert list(metricas) == ["Mía", "Modelo", "ESPN BPI", "Mercado", "Línea base"]
+    assert [m.acierto for m in metricas.values()] == [0, 1, 1, 0, 1]
+    assert cartelera_nba.backtest_valor(["NBA"], minimo=10) == {}  # la NBA no trae cuotas

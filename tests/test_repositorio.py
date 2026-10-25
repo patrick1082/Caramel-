@@ -9,17 +9,21 @@ from predictor.modelos import (
     Cuota,
     Deporte,
     Estado,
+    Fuente,
     Jugador,
     Mercado,
     Movimiento,
     Partido,
     Prediccion,
+    PrediccionPropia,
     ProbabilidadLinea,
+    Pronostico3,
     ResultadoHistorico,
     Rol,
     TipoMovimiento,
+    Valor,
 )
-from predictor.repositorio import _ESQUEMA_V1, _ESQUEMA_V2, Repositorio
+from predictor.repositorio import _ESQUEMA_V1, _ESQUEMA_V2, _ESQUEMA_V3, Repositorio
 
 AHORA = datetime(2026, 10, 24, 12, 0, tzinfo=UTC)
 
@@ -147,7 +151,7 @@ def test_migra_base_v1_sin_perder_apuestas(tmp_path, crear_apuesta):
     repo = Repositorio(ruta)
 
     assert [a.partido for a in repo.listar_apuestas()] == ["A vs B"]
-    assert repo._con.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert repo._con.execute("PRAGMA user_version").fetchone()[0] == 4
     assert repo.listar_partidos(AHORA, AHORA + timedelta(days=1)) == []
     repo.cerrar()
 
@@ -291,7 +295,115 @@ def test_migra_base_v2_conserva_historial(tmp_path):
 
     repo = Repositorio(ruta)
 
-    assert repo._con.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert repo._con.execute("PRAGMA user_version").fetchone()[0] == 4
     assert len(repo.historial_de("NBA")) == 1
     assert repo.listar_predicciones() == []
     repo.cerrar()
+
+
+def test_migra_base_v3_con_datos_sin_perder_nada(tmp_path):
+    ruta = tmp_path / "v3.db"
+    con = sqlite3.connect(ruta)
+    con.executescript(_ESQUEMA_V1 + _ESQUEMA_V2 + _ESQUEMA_V3)
+    con.execute(
+        "INSERT INTO apuestas (fecha_registro, fecha_evento, deporte, liga, partido, mercado, "
+        "seleccion, cuota, monto, casa, colocada, prediccion_propia, estado, resultado_neto, "
+        "nota) VALUES ('2026-10-01T10:00:00', '2026-10-02', 'NBA', 'NBA', 'A vs B', 'Ganador', "
+        "'A', '1.9', 1000, 'Betano', 1, '', 'ganada', 900, '')"
+    )
+    con.execute(
+        "INSERT INTO historial (liga, temporada, fecha, local, visitante, marcador_local, "
+        "marcador_visitante, extras) "
+        "VALUES ('LaLiga', '2627', '2026-09-01', 'A', 'B', 1, 0, '{\"tiros\": [10, 5]}')"
+    )
+    con.executemany(
+        "INSERT INTO config (clave, valor) VALUES (?, ?)",
+        [
+            ("historial_actualizado:LaLiga", "2026-10-24T10:00:00+00:00"),
+            ("historial_actualizado:NBA", "2026-10-24T10:00:00+00:00"),
+            ("fondo_inicial", "10000"),
+        ],
+    )
+    con.commit()
+    con.close()
+
+    repo = Repositorio(ruta)
+
+    assert repo._con.execute("PRAGMA user_version").fetchone()[0] == 4
+    [apuesta] = repo.listar_apuestas()
+    assert (apuesta.prob_modelo, apuesta.valor) == (None, Valor.NINGUNO)
+    assert apuesta.resultado_neto == 900
+    [resultado] = repo.historial_de("LaLiga")
+    assert (resultado.extras, resultado.cuotas) == ({"tiros": (10, 5)}, None)
+    # El fútbol se vuelve a descargar para traer las cuotas; la NBA no las tiene.
+    assert repo.obtener_config("historial_actualizado:LaLiga") is None
+    assert repo.obtener_config("historial_actualizado:NBA") is not None
+    assert repo.obtener_config("fondo_inicial") == "10000"
+    assert repo.listar_predicciones_propias() == repo.listar_pronosticos() == []
+    repo.cerrar()
+
+
+def test_apuesta_guarda_probabilidad_y_valor(repo, crear_apuesta):
+    guardada = repo.agregar_apuesta(crear_apuesta(prob_modelo=0.55, valor=Valor.CONFIRMADO))
+
+    assert repo.obtener_apuesta(guardada.id) == guardada
+    assert (guardada.prob_modelo, guardada.valor) == (0.55, Valor.CONFIRMADO)
+    repo.actualizar_apuesta(replace(guardada, valor=Valor.MODELO))
+    assert repo.obtener_apuesta(guardada.id).valor is Valor.MODELO
+
+
+def test_historial_guarda_cuotas(repo):
+    resultado = ResultadoHistorico(
+        "LaLiga", "2627", date(2026, 9, 1), "A", "B", 1, 0, cuotas=(1.9, 3.4, 4.2)
+    )
+
+    repo.guardar_historial("LaLiga", "2627", [resultado])
+
+    assert repo.historial_de("LaLiga") == [resultado]
+
+
+def _propia(partido_id="p1", inicio=AHORA, **cambios):
+    datos = {
+        "partido_id": partido_id,
+        "liga": "Premier League",
+        "local": "Arsenal",
+        "visitante": "Everton",
+        "inicio": inicio,
+        "ganador": "local",
+        "creada": AHORA - timedelta(hours=1),
+    }
+    return PrediccionPropia(**(datos | cambios))
+
+
+def test_prediccion_propia_ida_y_vuelta(repo):
+    chile = timezone(timedelta(hours=-3))
+    tarde = _propia("tarde", inicio=AHORA + timedelta(hours=3))
+    con_marcador = _propia(marcador_local=2, marcador_visitante=0, nota="Everton sin 9")
+
+    repo.guardar_prediccion_propia(tarde)
+    repo.guardar_prediccion_propia(_propia(inicio=AHORA.astimezone(chile)))
+    repo.guardar_prediccion_propia(con_marcador)  # reemplaza
+
+    assert repo.obtener_prediccion_propia("p1") == con_marcador
+    assert repo.obtener_prediccion_propia("otro") is None
+    assert repo.listar_predicciones_propias() == [con_marcador, tarde]
+    assert repo.listar_predicciones_propias(hasta=AHORA + timedelta(hours=1)) == [con_marcador]
+
+
+def test_pronosticos_por_partido_y_fuente(repo):
+    def pronostico(partido_id, fuente, local, empate, visita):
+        return Pronostico3(partido_id, fuente, local, empate, visita, AHORA)
+
+    repo.guardar_pronostico(pronostico("p1", Fuente.MERCADO, 0.5, 0.3, 0.2))
+    repo.guardar_pronostico(pronostico("n1", Fuente.ESPN, 0.8, None, 0.2))
+    repo.guardar_pronostico(pronostico("p1", Fuente.MODELO, 0.4, 0.3, 0.3))
+    nuevo = pronostico("p1", Fuente.MERCADO, 0.45, 0.3, 0.25)
+    repo.guardar_pronostico(nuevo)  # reemplaza el del mercado
+
+    assert [(p.fuente.value, p.prob_local) for p in repo.pronosticos_de("p1")] == [
+        ("mercado", 0.45),
+        ("modelo", 0.4),
+    ]
+    assert repo.pronosticos_de("p1")[0] == nuevo
+    assert [p.partido_id for p in repo.listar_pronosticos()] == ["n1", "p1", "p1"]
+    assert repo.pronosticos_de("otro") == []

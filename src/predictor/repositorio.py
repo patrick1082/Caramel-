@@ -16,7 +16,9 @@ from predictor.modelos import (
     Movimiento,
     Partido,
     Prediccion,
+    PrediccionPropia,
     ProbabilidadLinea,
+    Pronostico3,
     ResultadoHistorico,
 )
 
@@ -123,6 +125,52 @@ CREATE INDEX jugadores_liga ON jugadores (liga);
 PRAGMA user_version = 3;
 """
 
+# Opiniones que se congelan al inicio del partido; sin clave foránea por la misma razón.
+# Se borran las marcas del historial de fútbol para volver a descargarlo con cuotas.
+_ESQUEMA_V4 = """
+CREATE TABLE predicciones_propias (
+    partido_id TEXT PRIMARY KEY,
+    liga TEXT NOT NULL,
+    local TEXT NOT NULL,
+    visitante TEXT NOT NULL,
+    inicio TEXT NOT NULL,
+    ganador TEXT NOT NULL,
+    creada TEXT NOT NULL,
+    marcador_local INTEGER,
+    marcador_visitante INTEGER,
+    nota TEXT NOT NULL
+);
+CREATE INDEX predicciones_propias_inicio ON predicciones_propias (inicio);
+CREATE TABLE pronosticos (
+    partido_id TEXT NOT NULL,
+    fuente TEXT NOT NULL,
+    prob_local REAL NOT NULL,
+    prob_empate REAL,
+    prob_visitante REAL NOT NULL,
+    actualizada TEXT NOT NULL,
+    PRIMARY KEY (partido_id, fuente)
+);
+ALTER TABLE apuestas ADD COLUMN prob_modelo REAL;
+ALTER TABLE apuestas ADD COLUMN valor TEXT NOT NULL DEFAULT 'ninguno';
+ALTER TABLE historial ADD COLUMN cuotas TEXT;
+DELETE FROM config
+WHERE clave LIKE 'historial_actualizado:%' AND clave <> 'historial_actualizado:NBA';
+PRAGMA user_version = 4;
+"""
+
+_COLUMNAS_PROPIA = (
+    "partido_id",
+    "liga",
+    "local",
+    "visitante",
+    "inicio",
+    "ganador",
+    "creada",
+    "marcador_local",
+    "marcador_visitante",
+    "nota",
+)
+
 _COLUMNAS_PREDICCION = (
     "partido_id",
     "liga",
@@ -158,6 +206,8 @@ _COLUMNAS_APUESTA = (
     "estado",
     "resultado_neto",
     "nota",
+    "prob_modelo",
+    "valor",
 )
 
 
@@ -179,6 +229,8 @@ def _apuesta_a_fila(apuesta: Apuesta) -> dict:
         "estado": apuesta.estado.value,
         "resultado_neto": apuesta.resultado_neto,
         "nota": apuesta.nota,
+        "prob_modelo": apuesta.prob_modelo,
+        "valor": apuesta.valor.value,
     }
 
 
@@ -200,6 +252,8 @@ def _fila_a_apuesta(fila: sqlite3.Row) -> Apuesta:
         estado=fila["estado"],
         resultado_neto=fila["resultado_neto"],
         nota=fila["nota"],
+        prob_modelo=fila["prob_modelo"],
+        valor=fila["valor"],
     )
 
 
@@ -240,6 +294,7 @@ def _fila_a_resultado(fila: sqlite3.Row) -> ResultadoHistorico:
         marcador_local=fila["marcador_local"],
         marcador_visitante=fila["marcador_visitante"],
         extras={nombre: tuple(par) for nombre, par in json.loads(fila["extras"]).items()},
+        cuotas=tuple(json.loads(fila["cuotas"])) if fila["cuotas"] else None,
     )
 
 
@@ -285,6 +340,39 @@ def _fila_a_prediccion(fila: sqlite3.Row) -> Prediccion:
     )
 
 
+def _propia_a_fila(p: PrediccionPropia) -> dict:
+    return {
+        "partido_id": p.partido_id,
+        "liga": p.liga,
+        "local": p.local,
+        "visitante": p.visitante,
+        "inicio": _utc(p.inicio),
+        "ganador": p.ganador.value,
+        "creada": _utc(p.creada),
+        "marcador_local": p.marcador_local,
+        "marcador_visitante": p.marcador_visitante,
+        "nota": p.nota,
+    }
+
+
+def _fila_a_propia(fila: sqlite3.Row) -> PrediccionPropia:
+    datos = {c: fila[c] for c in _COLUMNAS_PROPIA}
+    datos["inicio"] = datetime.fromisoformat(datos["inicio"])
+    datos["creada"] = datetime.fromisoformat(datos["creada"])
+    return PrediccionPropia(**datos)
+
+
+def _fila_a_pronostico(fila: sqlite3.Row) -> Pronostico3:
+    return Pronostico3(
+        partido_id=fila["partido_id"],
+        fuente=fila["fuente"],
+        prob_local=fila["prob_local"],
+        prob_empate=fila["prob_empate"],
+        prob_visitante=fila["prob_visitante"],
+        actualizada=datetime.fromisoformat(fila["actualizada"]),
+    )
+
+
 def _fila_a_jugador(fila: sqlite3.Row) -> Jugador:
     return Jugador(
         liga=fila["liga"],
@@ -321,6 +409,8 @@ class Repositorio:
             self._con.executescript(_ESQUEMA_V2)
         if version < 3:
             self._con.executescript(_ESQUEMA_V3)
+        if version < 4:
+            self._con.executescript(_ESQUEMA_V4)
 
     def cerrar(self) -> None:
         self._con.close()
@@ -450,7 +540,8 @@ class Repositorio:
             )
             self._con.executemany(
                 "INSERT OR REPLACE INTO historial (liga, temporada, fecha, local, visitante, "
-                "marcador_local, marcador_visitante, extras) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "marcador_local, marcador_visitante, extras, cuotas) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         liga,
@@ -461,6 +552,7 @@ class Repositorio:
                         r.marcador_local,
                         r.marcador_visitante,
                         json.dumps(r.extras),
+                        json.dumps(r.cuotas) if r.cuotas is not None else None,
                     )
                     for r in resultados
                 ],
@@ -497,6 +589,60 @@ class Repositorio:
             consulta, parametros = consulta + " WHERE inicio < ?", [_utc(hasta)]
         filas = self._con.execute(consulta + " ORDER BY inicio, partido_id", parametros).fetchall()
         return [_fila_a_prediccion(fila) for fila in filas]
+
+    # --- Predicciones propias y pronósticos externos ---
+
+    def guardar_prediccion_propia(self, prediccion: PrediccionPropia) -> None:
+        """Guarda o reemplaza mi predicción de un partido (el servicio impide cambiarla tarde)."""
+        columnas = ", ".join(_COLUMNAS_PROPIA)
+        valores = ", ".join(f":{c}" for c in _COLUMNAS_PROPIA)
+        with self._con:
+            self._con.execute(
+                f"INSERT OR REPLACE INTO predicciones_propias ({columnas}) VALUES ({valores})",
+                _propia_a_fila(prediccion),
+            )
+
+    def obtener_prediccion_propia(self, partido_id: str) -> PrediccionPropia | None:
+        fila = self._con.execute(
+            "SELECT * FROM predicciones_propias WHERE partido_id = ?", (partido_id,)
+        ).fetchone()
+        return _fila_a_propia(fila) if fila else None
+
+    def listar_predicciones_propias(self, hasta: datetime | None = None) -> list[PrediccionPropia]:
+        """Mis predicciones (de partidos que empezaron antes de `hasta`), por hora de inicio."""
+        consulta, parametros = "SELECT * FROM predicciones_propias", []
+        if hasta is not None:
+            consulta, parametros = consulta + " WHERE inicio < ?", [_utc(hasta)]
+        filas = self._con.execute(consulta + " ORDER BY inicio, partido_id", parametros).fetchall()
+        return [_fila_a_propia(fila) for fila in filas]
+
+    def guardar_pronostico(self, pronostico: Pronostico3) -> None:
+        """Guarda o reemplaza el pronóstico de una fuente para un partido."""
+        with self._con:
+            self._con.execute(
+                "INSERT OR REPLACE INTO pronosticos (partido_id, fuente, prob_local, "
+                "prob_empate, prob_visitante, actualizada) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    pronostico.partido_id,
+                    pronostico.fuente.value,
+                    pronostico.prob_local,
+                    pronostico.prob_empate,
+                    pronostico.prob_visitante,
+                    _utc(pronostico.actualizada),
+                ),
+            )
+
+    def pronosticos_de(self, partido_id: str) -> list[Pronostico3]:
+        filas = self._con.execute(
+            "SELECT * FROM pronosticos WHERE partido_id = ? ORDER BY fuente", (partido_id,)
+        ).fetchall()
+        return [_fila_a_pronostico(fila) for fila in filas]
+
+    def listar_pronosticos(self) -> list[Pronostico3]:
+        filas = self._con.execute(
+            "SELECT * FROM pronosticos ORDER BY partido_id, fuente"
+        ).fetchall()
+        return [_fila_a_pronostico(fila) for fila in filas]
 
     # --- Jugadores ---
 

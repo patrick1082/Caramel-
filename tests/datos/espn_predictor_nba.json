@@ -1,0 +1,41 @@
+{
+ "header": {
+  "id": "401909854",
+  "competitions": [
+   {
+    "date": "2026-10-24T23:30Z",
+    "competitors": [
+     {
+      "id": "5",
+      "homeAway": "home",
+      "team": {
+       "id": "5",
+       "displayName": "Cleveland Cavaliers"
+      }
+     },
+     {
+      "id": "17",
+      "homeAway": "away",
+      "team": {
+       "id": "17",
+       "displayName": "Brooklyn Nets"
+      }
+     }
+    ]
+   }
+  ]
+ },
+ "predictor": {
+  "header": "Matchup Predictor",
+  "homeTeam": {
+   "id": "5",
+   "gameProjection": "80.5",
+   "teamChanceLoss": "19.5"
+  },
+  "awayTeam": {
+   "id": "17",
+   "gameProjection": "19.5",
+   "teamChanceLoss": "80.5"
+  }
+ }
+}

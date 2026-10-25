@@ -21,6 +21,7 @@ def test_football_data_url_y_parseo():
     assert (primero.marcador_local, primero.marcador_visitante) == (3, 0)
     assert primero.extras["tiros"] == (20, 4)
     assert primero.extras["xg"] == (1.88, 0.2)
+    assert primero.cuotas == (1.19, 6.77, 14.19)
     assert primero.temporada == "2627"
 
 
@@ -37,6 +38,19 @@ def test_football_data_omite_filas_sin_resultado_y_columnas_faltantes():
     assert len(resultados) == 1
     assert resultados[0].fecha == date(2026, 8, 21)
     assert resultados[0].extras == {}
+    assert resultados[0].cuotas is None
+
+
+def test_football_data_cuotas_de_respaldo_y_cuotas_invalidas():
+    texto = (
+        "Date,HomeTeam,AwayTeam,FTHG,FTAG,AvgH,AvgD,AvgA,BbAvH,BbAvD,BbAvA\n"
+        "21/08/26,Arsenal,Coventry,1,1,,,,2.1,3.3,3.4\n"
+        "28/08/26,Hull,Leeds,0,2,1.0,3.0,4.0,,,\n"
+    )
+
+    resultados = football_data.parsear("Premier League", "1011", texto)
+
+    assert [r.cuotas for r in resultados] == [(2.1, 3.3, 3.4), None]
 
 
 def test_football_data_temporada_inexistente_devuelve_vacio():

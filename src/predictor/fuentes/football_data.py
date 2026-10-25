@@ -26,6 +26,8 @@ EXTRAS = {
     "corners": ("HC", "AC"),
     "amarillas": ("HY", "AY"),
 }
+# Cuotas promedio previas al partido (local, empate, visitante); BbAv en temporadas viejas.
+CUOTAS = (("AvgH", "AvgD", "AvgA"), ("BbAvH", "BbAvD", "BbAvA"))
 
 
 def _fecha(texto: str) -> date:
@@ -38,6 +40,14 @@ def _numero(texto: str | None) -> float | None:
         return float(texto)
     except (TypeError, ValueError):
         return None
+
+
+def _cuotas(fila: dict) -> tuple[float, float, float] | None:
+    for columnas in CUOTAS:
+        cuotas = [_numero(fila.get(c)) for c in columnas]
+        if all(c is not None and c > 1 for c in cuotas):
+            return tuple(cuotas)
+    return None
 
 
 def parsear(liga: str, temporada: str, texto: str) -> list[ResultadoHistorico]:
@@ -60,6 +70,7 @@ def parsear(liga: str, temporada: str, texto: str) -> list[ResultadoHistorico]:
                 marcador_local=int(fila["FTHG"]),
                 marcador_visitante=int(fila["FTAG"]),
                 extras=extras,
+                cuotas=_cuotas(fila),
             )
         )
     return resultados

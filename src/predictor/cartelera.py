@@ -10,9 +10,15 @@ from decimal import Decimal
 from statistics import fmean
 from zoneinfo import ZoneInfo
 
-from predictor import estadisticas, evaluacion, factores
+from predictor import estadisticas, evaluacion, factores, valor
 from predictor.estadisticas import Estadisticas
-from predictor.evaluacion import MINIMO_BACKTEST, Evaluada, MetricasModelo
+from predictor.evaluacion import (
+    MINIMO_BACKTEST,
+    Evaluada,
+    MetricasFuente,
+    MetricasModelo,
+    ResultadoValor,
+)
 from predictor.fuentes import espn, football_data, nba
 from predictor.fuentes.odds_api import ClienteOddsApi, costo_creditos
 from predictor.ligas import (
@@ -27,22 +33,31 @@ from predictor.ligas import (
 from predictor.modelos import (
     Cuota,
     Deporte,
+    Fuente,
+    Ganador,
     Jugador,
     Mercado,
     Partido,
     Prediccion,
+    PrediccionPropia,
     ProbabilidadLinea,
+    Pronostico3,
     ResultadoHistorico,
+    Valor,
 )
 from predictor.nombres import emparejar
 from predictor.prediccion import Ajuste, Pronostico, ajustar
 from predictor.repositorio import Repositorio
+from predictor.valor import Umbrales, Valoracion
 
 logger = logging.getLogger(__name__)
 
 VIGENCIA_CUOTAS = timedelta(minutes=60)
 VIGENCIA_HISTORIAL = timedelta(days=1)
 VIGENCIA_JUGADORES = timedelta(days=1)
+VIGENCIA_BPI = timedelta(hours=1)
+HORIZONTE_BPI = timedelta(days=2)  # partidos NBA cuyo BPI se descarga
+DESFASE_BPI = timedelta(hours=6)  # diferencia de inicio tolerada entre ESPN y The Odds API
 
 # Las fechas del historial son locales de cada liga: así el descanso se cuenta bien.
 ZONA_HISTORIAL = {
@@ -51,6 +66,12 @@ ZONA_HISTORIAL = {
 }
 
 _CREDITOS = "odds_creditos_restantes"
+_BPI = "bpi_actualizado:NBA"
+_UMBRALES = {  # clave en config → campo de Umbrales
+    "umbral_valor_modelo": "modelo",
+    "umbral_valor_cuota_maxima": "cuota_maxima",
+    "umbral_valor_mercado": "mercado",
+}
 _ORDEN_MERCADOS = list(Mercado)
 
 
@@ -72,6 +93,12 @@ class Analisis:
     local: Estadisticas | None
     visitante: Estadisticas | None
     cara_a_cara: list[ResultadoHistorico]
+
+
+@dataclass(frozen=True)
+class Oportunidad:
+    partido: Partido
+    valoracion: Valoracion
 
 
 def descargar_jugadores(liga: str, hoy: date) -> list[Jugador]:
@@ -122,6 +149,34 @@ def _lineas(
     return [lineas[k] for k in sorted(lineas, key=lambda k: (orden.index(k[0]), k[2], k[1]))]
 
 
+def _partido_de(bpi: espn.BpiNba, partidos: Sequence[Partido]) -> Partido | None:
+    """Partido de The Odds API que corresponde al de ESPN (nombres y hora de inicio)."""
+    for partido in partidos:
+        if (
+            emparejar(bpi.local, [partido.local])
+            and emparejar(bpi.visitante, [partido.visitante])
+            and abs(bpi.inicio - partido.inicio) <= DESFASE_BPI
+        ):
+            return partido
+    return None
+
+
+def _pronostico_mercado(
+    partido: Partido, filas: Sequence[FilaComparacion], ahora: datetime
+) -> Pronostico3 | None:
+    """1X2 sin margen; None si falta alguna selección del ganador."""
+    probs = valor.probabilidades_mercado(filas, partido.local)
+    selecciones = [partido.local, partido.visitante]
+    if partido.deporte is Deporte.FUTBOL:
+        selecciones.insert(1, "Draw")
+    claves = [(Mercado.GANADOR, s, None) for s in selecciones]
+    if not all(clave in probs for clave in claves):
+        return None
+    local, *medio, visitante = (probs[clave] for clave in claves)
+    empate = medio[0] if medio else None
+    return Pronostico3(partido.id, Fuente.MERCADO, local, empate, visitante, ahora)
+
+
 class Cartelera:
     def __init__(
         self,
@@ -131,12 +186,14 @@ class Cartelera:
         descargar_nba: Callable[[str], list[ResultadoHistorico]] = nba.descargar,
         reloj: Callable[[], datetime] = lambda: datetime.now(UTC),
         descargar_jugadores: Callable[[str, date], list[Jugador]] = descargar_jugadores,
+        descargar_bpi: Callable[[date], list[espn.BpiNba]] = espn.bpi_nba,
     ) -> None:
         self._repo = repo
         self._cliente = cliente
         self._descargar_futbol = descargar_futbol
         self._descargar_nba = descargar_nba
         self._descargar_jugadores = descargar_jugadores
+        self._descargar_bpi = descargar_bpi
         self._reloj = reloj
         self._historiales: dict[str, list[ResultadoHistorico]] = {}
         self._ajustes: dict[tuple[str, date], Ajuste] = {}
@@ -240,6 +297,57 @@ class Cartelera:
             self._marcar(clave)
             actualizadas.append(liga)
         return actualizadas, errores
+
+    def actualizar_bpi(self, forzar: bool = False) -> tuple[list[date], dict[str, str]]:
+        """ESPN BPI de los próximos partidos NBA guardados, como mucho una vez por hora.
+
+        Devuelve los días actualizados y el error de cada día que falló; si alguno falla,
+        no se marca la vigencia para reintentarlo en la próxima actualización.
+        """
+        ahora = self._reloj()
+        momento = self._momento(_BPI)
+        if not forzar and momento is not None and momento >= ahora - VIGENCIA_BPI:
+            return [], {}
+        zona = ZONA_HISTORIAL[Deporte.NBA]
+        por_dia: dict[date, list[Partido]] = {}
+        for partido in self._repo.listar_partidos(ahora, ahora + HORIZONTE_BPI, ["NBA"]):
+            por_dia.setdefault(partido.inicio.astimezone(zona).date(), []).append(partido)
+
+        actualizados, errores = [], {}
+        for dia, partidos in sorted(por_dia.items()):
+            try:
+                pronosticos = self._descargar_bpi(dia)
+            except ValueError as error:
+                logger.warning("BPI NBA del %s sin actualizar: %s", dia, error)
+                errores[dia.isoformat()] = str(error)
+                continue
+            for bpi in pronosticos:
+                partido = _partido_de(bpi, partidos)
+                if partido is not None:
+                    self._repo.guardar_pronostico(
+                        Pronostico3(
+                            partido.id, Fuente.ESPN, bpi.prob_local, None, bpi.prob_visitante, ahora
+                        )
+                    )
+            actualizados.append(dia)
+        if not errores:
+            self._marcar(_BPI)
+        return actualizados, errores
+
+    # --- Umbrales de valor ---
+
+    @property
+    def umbrales(self) -> Umbrales:
+        guardados = {}
+        for clave, campo in _UMBRALES.items():
+            if (texto := self._repo.obtener_config(clave)) is not None:
+                guardados[campo] = float(texto)
+        return Umbrales(**guardados)
+
+    def fijar_umbrales(self, umbrales: Umbrales) -> None:
+        for clave, campo in _UMBRALES.items():
+            self._repo.fijar_config(clave, str(getattr(umbrales, campo)))
+        logger.info("Umbrales de valor fijados en %s", umbrales)
 
     # --- Consultas ---
 
@@ -375,6 +483,81 @@ class Cartelera:
         self._repo.guardar_prediccion(prediccion)
         return prediccion
 
+    # --- Contraste y valor ---
+
+    def pronosticos(
+        self, partido: Partido, prediccion: Prediccion | None = None
+    ) -> dict[Fuente, Pronostico3]:
+        """Modelo, mercado sin margen y ESPN BPI del 1X2, por fuente.
+
+        Antes del inicio se recalculan y guardan el del modelo y el del mercado (se puede
+        pasar la `prediccion` ya calculada); desde el inicio se devuelven los guardados.
+        """
+        if self._reloj() < partido.inicio:
+            ahora = self._reloj()
+            if prediccion is None:
+                prediccion = self.predecir(partido)
+            nuevos = [_pronostico_mercado(partido, self.comparar(partido), ahora)]
+            if prediccion is not None:
+                nuevos.append(
+                    Pronostico3(
+                        partido.id,
+                        Fuente.MODELO,
+                        prediccion.prob_local,
+                        prediccion.prob_empate,
+                        prediccion.prob_visitante,
+                        ahora,
+                    )
+                )
+            for pronostico in nuevos:
+                if pronostico is not None:
+                    self._repo.guardar_pronostico(pronostico)
+        return {p.fuente: p for p in self._repo.pronosticos_de(partido.id)}
+
+    def valorar(self, partido: Partido, prediccion: Prediccion | None) -> list[Valoracion]:
+        """Probabilidad del modelo y del mercado, EV y marca de valor de cada fila de cuotas."""
+        return valor.valorar(self.comparar(partido), prediccion, partido.local, self.umbrales)
+
+    def valor_del_dia(self, partidos: Iterable[Partido]) -> list[Oportunidad]:
+        """Cuotas de Betano con valor en los partidos que todavía no empiezan, por EV."""
+        oportunidades = []
+        for partido in partidos:
+            if self._reloj() >= partido.inicio:
+                continue
+            for valoracion in self.valorar(partido, self.predecir(partido)):
+                if valoracion.valor is not Valor.NINGUNO:
+                    oportunidades.append(Oportunidad(partido, valoracion))
+        return sorted(oportunidades, key=lambda o: -(o.valoracion.ev or 0))
+
+    def prediccion_propia(self, partido: Partido) -> PrediccionPropia | None:
+        return self._repo.obtener_prediccion_propia(partido.id)
+
+    def guardar_prediccion_propia(
+        self,
+        partido: Partido,
+        ganador: Ganador | str,
+        marcador_local: int | None = None,
+        marcador_visitante: int | None = None,
+        nota: str = "",
+    ) -> PrediccionPropia:
+        """Guarda o reemplaza la predicción del usuario; desde el inicio queda congelada."""
+        if self._reloj() >= partido.inicio:
+            raise ValueError("El partido ya empezó: tu predicción quedó congelada")
+        propia = PrediccionPropia(
+            partido_id=partido.id,
+            liga=partido.liga,
+            local=partido.local,
+            visitante=partido.visitante,
+            inicio=partido.inicio,
+            ganador=ganador,
+            creada=self._reloj(),
+            marcador_local=marcador_local,
+            marcador_visitante=marcador_visitante,
+            nota=nota.strip(),
+        )
+        self._repo.guardar_prediccion_propia(propia)
+        return propia
+
     # --- Evaluación del modelo ---
 
     def evaluadas(self) -> list[Evaluada]:
@@ -387,10 +570,21 @@ class Cartelera:
     def evaluacion(self) -> dict[str, MetricasModelo]:
         return evaluacion.por_liga(self.evaluadas())
 
-    def backtest(
-        self, ligas: Iterable[str], minimo: int = MINIMO_BACKTEST
-    ) -> dict[str, MetricasModelo]:
-        """Walk-forward sobre todo el historial guardado (temporada actual y anterior)."""
+    def evaluacion_por_fuente(self) -> dict[str, MetricasFuente]:
+        """Acierto y Brier de mi predicción, el modelo, ESPN, el mercado y la línea base."""
+        ahora = self._reloj()
+        propias = self._repo.listar_predicciones_propias(hasta=ahora)
+        predicciones = self._repo.listar_predicciones(hasta=ahora)
+        ligas = sorted({p.liga for p in [*propias, *predicciones]})
+        historial = [r for liga in ligas for r in self._historial(liga)]
+        return evaluacion.por_fuente(
+            evaluacion.cruzar(predicciones, historial),
+            self._repo.listar_pronosticos(),
+            propias,
+            historial,
+        )
+
+    def _evaluadas_backtest(self, ligas: Iterable[str], minimo: int) -> list[Evaluada]:
         evaluadas = []
         for liga in ligas:
             if liga not in self._backtests:
@@ -398,4 +592,16 @@ class Cartelera:
                     liga, self._historial(liga), minimo=minimo
                 )
             evaluadas += self._backtests[liga]
-        return evaluacion.por_liga(evaluadas)
+        return evaluadas
+
+    def backtest(
+        self, ligas: Iterable[str], minimo: int = MINIMO_BACKTEST
+    ) -> dict[str, MetricasModelo]:
+        """Walk-forward sobre todo el historial guardado (temporada actual y anterior)."""
+        return evaluacion.por_liga(self._evaluadas_backtest(ligas, minimo))
+
+    def backtest_valor(
+        self, ligas: Iterable[str], minimo: int = MINIMO_BACKTEST
+    ) -> dict[str, ResultadoValor]:
+        """Qué habría pasado apostando 1 unidad cada vez que el backtest vio valor."""
+        return evaluacion.backtest_valor(self._evaluadas_backtest(ligas, minimo), self.umbrales)

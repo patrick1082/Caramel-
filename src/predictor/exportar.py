@@ -7,18 +7,24 @@ from io import BytesIO
 import pandas as pd
 
 from predictor.bitacora import Metricas, Resumen
-from predictor.cartelera import Analisis, FilaComparacion
+from predictor.cartelera import Analisis, FilaComparacion, Oportunidad
 from predictor.estadisticas import Estadisticas, Promedios
-from predictor.evaluacion import TOTAL, Evaluada, MetricasModelo
+from predictor.evaluacion import TOTAL, Evaluada, MetricasFuente, MetricasModelo, ResultadoValor
 from predictor.ligas import ZONA_CHILE
 from predictor.modelos import (
     Apuesta,
+    Fuente,
+    Ganador,
     Jugador,
     Mercado,
     Movimiento,
     Prediccion,
+    PrediccionPropia,
+    Pronostico3,
     ResultadoHistorico,
+    Valor,
 )
+from predictor.valor import Valoracion, prob_modelo
 
 COLUMNAS_APUESTAS = {
     "id": "N°",
@@ -36,6 +42,8 @@ COLUMNAS_APUESTAS = {
     "estado": "Estado",
     "resultado_neto": "Resultado neto (CLP)",
     "prediccion_propia": "Mi predicción",
+    "prob_modelo": "Modelo (%)",
+    "valor": "Valor",
     "nota": "Nota",
 }
 
@@ -82,6 +90,33 @@ COLUMNAS_EVALUACION = (
     "Error medio",
     "Over/under medidos",
     "Acierto over/under (%)",
+)
+
+COLUMNAS_VALOR_DEL_DIA = (
+    "Hora",
+    "Liga",
+    "Partido",
+    "Mercado",
+    "Selección",
+    "Línea",
+    "Betano",
+    "Modelo (%)",
+    "Mercado (%)",
+    "EV (%)",
+    "Valor",
+)
+
+COLUMNAS_CONTRASTE = ("Opinión", "Local (%)", "Empate (%)", "Visita (%)", "Favorito", "Marcador")
+
+COLUMNAS_FUENTES = ("Fuente", "Partidos", "Acierto (%)", "Brier")
+
+COLUMNAS_BACKTEST_VALOR = (
+    "Liga",
+    "Partidos",
+    "Apuestas",
+    "Acierto (%)",
+    "ROI valor (%)",
+    "ROI favorito (%)",
 )
 
 COLUMNAS_PREDICCIONES = (
@@ -136,6 +171,8 @@ def tabla_apuestas(apuestas: list[Apuesta]) -> pd.DataFrame:
             "estado": a.estado.value,
             "resultado_neto": a.resultado_neto,
             "prediccion_propia": a.prediccion_propia,
+            "prob_modelo": _porcentaje(a.prob_modelo),
+            "valor": a.valor.etiqueta,
             "nota": a.nota,
         }
         for a in apuestas
@@ -202,6 +239,10 @@ def tabla_resumen(resumen: Resumen) -> pd.DataFrame:
     return pd.DataFrame(filas, columns=["Concepto", "Valor"])
 
 
+def _seleccion(seleccion: str) -> str:
+    return "Empate" if seleccion == "Draw" else seleccion
+
+
 def _cuota(valor) -> float | None:
     return None if valor is None else float(valor)
 
@@ -212,28 +253,17 @@ def _linea(fila: FilaComparacion) -> str:
     return f"{fila.linea:+g}" if fila.mercado is Mercado.HANDICAP else f"{fila.linea:g}"
 
 
-def _prob_modelo(fila: FilaComparacion, prediccion: Prediccion) -> float | None:
-    if fila.mercado is Mercado.GANADOR:
-        return {
-            prediccion.local: prediccion.prob_local,
-            "Draw": prediccion.prob_empate,
-            prediccion.visitante: prediccion.prob_visitante,
-        }.get(fila.seleccion)
-    linea = None if fila.linea is None else float(fila.linea)
-    for p in prediccion.lineas:
-        if (p.mercado, p.seleccion, p.linea) == (fila.mercado, fila.seleccion, linea):
-            return p.prob
-    return None
-
-
 def tabla_cuotas(
-    filas: list[FilaComparacion], prediccion: Prediccion | None = None
+    filas: list[FilaComparacion],
+    prediccion: Prediccion | None = None,
+    valoraciones: list[Valoracion] = (),
 ) -> pd.DataFrame:
-    """Cuotas por casa; con predicción suma la probabilidad del modelo y su cuota justa."""
+    """Cuotas por casa; con predicción suma la probabilidad del modelo y su cuota justa, y con
+    valoraciones (en el orden de `filas`) el mercado sin margen, el EV de Betano y la marca."""
     datos = [
         (
             f.mercado.etiqueta,
-            "Empate" if f.seleccion == "Draw" else f.seleccion,
+            _seleccion(f.seleccion),
             _linea(f),
             _cuota(f.betano),
             _cuota(f.pinnacle),
@@ -246,10 +276,117 @@ def tabla_cuotas(
     ]
     tabla = pd.DataFrame(datos, columns=COLUMNAS_CUOTAS)
     if prediccion is not None:
-        probs = [_prob_modelo(f, prediccion) for f in filas]
+        probs = [prob_modelo(f, prediccion) for f in filas]
         tabla["Modelo (%)"] = [_porcentaje(p) for p in probs]
         tabla["Cuota justa"] = [round(1 / p, 2) if p else None for p in probs]
+    if valoraciones:
+        tabla["Mercado (%)"] = [_porcentaje(v.prob_mercado) for v in valoraciones]
+        tabla["EV (%)"] = [_porcentaje(v.ev) for v in valoraciones]
+        tabla["Valor"] = [v.valor.etiqueta for v in valoraciones]
     return tabla
+
+
+def tabla_valor_del_dia(oportunidades: list[Oportunidad]) -> pd.DataFrame:
+    filas = [
+        (
+            o.partido.inicio.astimezone(ZONA_CHILE).strftime("%H:%M"),
+            o.partido.liga,
+            o.partido.nombre,
+            o.valoracion.fila.mercado.etiqueta,
+            _seleccion(o.valoracion.fila.seleccion),
+            _linea(o.valoracion.fila),
+            _cuota(o.valoracion.fila.betano),
+            _porcentaje(o.valoracion.prob_modelo),
+            _porcentaje(o.valoracion.prob_mercado),
+            _porcentaje(o.valoracion.ev),
+            o.valoracion.valor.etiqueta,
+        )
+        for o in oportunidades
+    ]
+    return pd.DataFrame(filas, columns=COLUMNAS_VALOR_DEL_DIA)
+
+
+_FUENTES_CONTRASTE = {
+    Fuente.MODELO: "el modelo",
+    Fuente.ESPN: "ESPN BPI",
+    Fuente.MERCADO: "el mercado",
+}
+
+
+def _ganador(ganador: Ganador, local: str, visitante: str) -> str:
+    return {Ganador.LOCAL: local, Ganador.EMPATE: "Empate", Ganador.VISITANTE: visitante}[ganador]
+
+
+def tabla_contraste(
+    local: str,
+    visitante: str,
+    propia: PrediccionPropia | None,
+    pronosticos: dict[Fuente, Pronostico3],
+    prediccion: Prediccion | None = None,
+) -> pd.DataFrame:
+    """Las opiniones del 1X2 lado a lado: la mía, el modelo, ESPN BPI y el mercado.
+
+    Solo aparecen las que existen; la columna de empate, solo si alguna fuente lo tiene.
+    """
+    filas = []
+    if propia is not None:
+        marcador = ""
+        if propia.marcador_local is not None:
+            marcador = f"{propia.marcador_local} - {propia.marcador_visitante}"
+        filas.append(
+            ("Mía", None, None, None, _ganador(propia.ganador, local, visitante), marcador)
+        )
+    for fuente in _FUENTES_CONTRASTE:
+        if (p := pronosticos.get(fuente)) is None:
+            continue
+        marcador = ""
+        if fuente is Fuente.MODELO and prediccion is not None:
+            marcador = prediccion.marcador_probable or ""
+        filas.append(
+            (
+                fuente.etiqueta,
+                _porcentaje(p.prob_local),
+                _porcentaje(p.prob_empate),
+                _porcentaje(p.prob_visitante),
+                _ganador(p.favorito, local, visitante),
+                marcador,
+            )
+        )
+    tabla = pd.DataFrame(filas, columns=COLUMNAS_CONTRASTE)
+    if tabla["Empate (%)"].isna().all():
+        tabla = tabla.drop(columns="Empate (%)")
+    return tabla
+
+
+def resumen_contraste(
+    local: str,
+    visitante: str,
+    propia: PrediccionPropia | None,
+    pronosticos: dict[Fuente, Pronostico3],
+) -> str:
+    """Una línea: "Coinciden tú y el mercado: gana X" o "Gana X según tú · Empate según…"."""
+    opiniones: dict[str, list[str]] = {}
+    if propia is not None:
+        opiniones.setdefault(_ganador(propia.ganador, local, visitante), []).append("tú")
+    for fuente, nombre in _FUENTES_CONTRASTE.items():
+        if (p := pronosticos.get(fuente)) is not None:
+            opiniones.setdefault(_ganador(p.favorito, local, visitante), []).append(nombre)
+    if sum(map(len, opiniones.values())) < 2:
+        return ""
+
+    def _lista(quienes: list[str]) -> str:
+        return quienes[0] if len(quienes) == 1 else ", ".join(quienes[:-1]) + " y " + quienes[-1]
+
+    def _resultado(ganador: str) -> str:
+        return "empate" if ganador == "Empate" else f"gana {ganador}"
+
+    if len(opiniones) == 1:
+        ganador, quienes = next(iter(opiniones.items()))
+        return f"Coinciden {_lista(quienes)}: {_resultado(ganador)}"
+    return " · ".join(
+        f"{_resultado(ganador)[0].upper()}{_resultado(ganador)[1:]} según {_lista(quienes)}"
+        for ganador, quienes in opiniones.items()
+    )
 
 
 def tabla_jugadores(
@@ -285,6 +422,30 @@ def tabla_evaluacion(metricas: dict[str, MetricasModelo]) -> pd.DataFrame:
         for liga, m in metricas.items()
     ]
     return pd.DataFrame(filas, columns=COLUMNAS_EVALUACION)
+
+
+def tabla_fuentes(metricas: dict[str, MetricasFuente]) -> pd.DataFrame:
+    """Acierto y Brier de cada opinión; la mía no tiene Brier porque solo elige ganador."""
+    filas = [
+        (fuente, m.partidos, _porcentaje(m.acierto), _redondear(m.brier))
+        for fuente, m in metricas.items()
+    ]
+    return pd.DataFrame(filas, columns=COLUMNAS_FUENTES)
+
+
+def tabla_backtest_valor(resultados: dict[str, ResultadoValor]) -> pd.DataFrame:
+    filas = [
+        (
+            liga,
+            r.partidos,
+            r.apuestas,
+            _porcentaje(r.acierto),
+            _porcentaje(r.roi),
+            _porcentaje(r.roi_favorito),
+        )
+        for liga, r in resultados.items()
+    ]
+    return pd.DataFrame(filas, columns=COLUMNAS_BACKTEST_VALOR)
 
 
 def _si_no(valor: bool | None) -> str:
@@ -380,9 +541,11 @@ def exportar_excel(
     resumen: Resumen,
     predicciones: list[Prediccion] = (),
     evaluadas: list[Evaluada] = (),
+    fuentes: dict[str, MetricasFuente] | None = None,
 ) -> bytes:
     totales = tabla_resumen(resumen)
-    desglose = tabla_metricas({**resumen.por_deporte, **resumen.por_liga})
+    por_valor = {f"Valor: {Valor(v).etiqueta}": m for v, m in resumen.por_valor.items()}
+    desglose = tabla_metricas({**resumen.por_deporte, **resumen.por_liga, **por_valor})
 
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
@@ -393,7 +556,14 @@ def exportar_excel(
         tabla_predicciones(list(predicciones), list(evaluadas)).to_excel(
             writer, sheet_name="Predicciones", index=False
         )
+        tabla_fuentes(fuentes or {}).to_excel(writer, sheet_name="Contraste", index=False)
         for hoja in writer.sheets.values():
+            for fila in hoja.iter_rows():
+                for celda in fila:
+                    # Nombres y notas vienen de fuentes externas o del usuario: un texto que
+                    # empieza con "=" se guarda como texto, nunca como fórmula.
+                    if celda.data_type == "f":
+                        celda.data_type = "s"
             for columna in hoja.columns:
                 ancho = max(len(str(celda.value or "")) for celda in columna)
                 hoja.column_dimensions[columna[0].column_letter].width = min(ancho + 2, 50)

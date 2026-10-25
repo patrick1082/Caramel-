@@ -104,3 +104,76 @@ def test_nba_jugadores_error():
 
     with pytest.raises(ValueError, match="jugadores NBA 2026-27"):
         nba.jugadores("2026-27", buscar=falla)
+
+
+class ObtenerBpi:
+    """Scoreboard del fixture; un summary real, uno 50/50, uno caído y el resto sin predictor."""
+
+    def __init__(self):
+        self.urls: list[str] = []
+
+    def __call__(self, url, params=None, timeout=None):
+        self.urls.append(url)
+        if "/scoreboard" in url:
+            return RespuestaFalsa((DATOS / "espn_scoreboard_nba.json").read_bytes())
+        evento = url.rsplit("=", 1)[1]
+        if evento == "401909854":
+            return RespuestaFalsa((DATOS / "espn_predictor_nba.json").read_bytes())
+        if evento == "401909853":
+            parejo = {"homeTeam": {"id": "30", "gameProjection": "50.0"}}
+            return RespuestaFalsa(json.dumps({"predictor": parejo}).encode())
+        if evento == "401909855":
+            return RespuestaFalsa(status_code=503)
+        return RespuestaFalsa(b"{}")
+
+
+def test_bpi_nba_lee_el_predictor_de_cada_partido(caplog):
+    from datetime import UTC, datetime
+
+    obtener = ObtenerBpi()
+
+    pronosticos = espn.bpi_nba(date(2026, 10, 24), obtener)
+
+    assert obtener.urls[0].endswith("/nba/scoreboard?dates=20261024")
+    assert obtener.urls[2].endswith("/nba/summary?event=401909854")
+    assert len(obtener.urls) == 9 and all(u.startswith("https://") for u in obtener.urls)
+    assert pronosticos == [
+        espn.BpiNba(
+            "Cleveland Cavaliers",
+            "Brooklyn Nets",
+            datetime(2026, 10, 24, 23, 30, tzinfo=UTC),
+            pytest.approx(0.805),
+            pytest.approx(0.195),
+        )
+    ]
+    assert "401909855" in caplog.text and "error 503" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "predictor, esperado",
+    [
+        ({"homeTeam": {"id": "5", "gameProjection": "61.2"}}, 0.612),
+        ({"homeTeam": {"id": "17"}, "awayTeam": {"id": "5", "gameProjection": "70"}}, 0.70),
+        ({"homeTeam": {"id": "5", "gameProjection": "120"}}, None),
+        ({"homeTeam": {"id": "5", "gameProjection": "n/a"}}, None),
+        ({"homeTeam": {"id": "17", "gameProjection": "61.2"}}, None),
+        (None, None),
+    ],
+)
+def test_prob_local_del_predictor(predictor, esperado):
+    prob = espn._prob_local({"predictor": predictor}, "5")
+
+    assert prob == (None if esperado is None else pytest.approx(esperado))
+
+
+def test_bpi_nba_omite_eventos_incompletos():
+    eventos = {"events": [{"id": "1", "competitions": []}, {"id": "../x", "competitions": []}]}
+    obtener = ObtenerFalso(RespuestaFalsa(json.dumps(eventos).encode()))
+
+    assert espn.bpi_nba(date(2026, 10, 24), obtener) == []
+    assert len(obtener.llamadas) == 1  # no se pide ningún summary
+
+
+def test_bpi_nba_error_del_scoreboard_se_propaga():
+    with pytest.raises(ValueError, match="partidos NBA"):
+        espn.bpi_nba(date(2026, 10, 24), ObtenerFalso(RespuestaFalsa(status_code=500)))

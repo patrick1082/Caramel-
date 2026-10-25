@@ -10,10 +10,14 @@ depósitos/retiros, balances (saldo, ROI, % acierto por deporte y liga) y export
 hora (Chile), deporte y liga; cuotas de ganador, over/under y hándicap de Betano y otras casas, con
 la mejor cuota y el promedio; forma reciente de cada equipo y enfrentamientos directos.
 
-**Hito 3 — Predicción** (actual): cada partido muestra la predicción de un modelo estadístico
+**Hito 3 — Predicción**: cada partido muestra la predicción de un modelo estadístico
 local (probabilidades, marcador esperado, total frente a la línea de Betano, probabilidad y cuota
 justa en cada línea), figuras y bajas, y factores clave. Las predicciones se guardan y la pestaña
 *Modelo* mide su acierto frente a una línea base.
+
+**Hito 4 — Contraste y valor** (actual): cada partido muestra lado a lado mi predicción, la del
+modelo, ESPN BPI (NBA) y el mercado; la tabla de cuotas marca las apuestas con valor, la pestaña
+*Partidos* lista el "Valor del día" y el *Resumen* compara el ROI con y sin valor.
 
 ## Instalación
 
@@ -45,6 +49,7 @@ $env:PREDICTOR_DB = "E:\datos\bitacora.db"; .venv\Scripts\python -m streamlit ru
 | Figuras NBA (3 por equipo, por puntos) | stats.nba.com vía `nba_api` | Gratis |
 | Lesiones NBA | API pública de ESPN (sin clave) | Gratis |
 | Goleadores y asistidores fútbol | API pública de ESPN (sin clave) | Gratis |
+| Probabilidad de victoria NBA (BPI) | API pública de ESPN (sin clave) | Gratis (1 + 1 consulta por partido) |
 
 - Betano Chile no está en The Odds API: se usa **Betano (UK)** como aproximación. Stake tampoco
   está; se usa **Pinnacle** como referencia de mercado. Betano UK no ofrece hándicap NBA.
@@ -89,6 +94,33 @@ y cada partido pesa según su antigüedad (vida media de 180 días).
   partidos anteriores. Con la temporada 2025-26 real (2.963 partidos) el modelo acertó el 58,5 %
   frente al 48,7 % de la línea base (Brier 0,525 frente a 0,585) y superó a la base en todas las
   ligas. No mide over/under porque no hay líneas históricas.
+
+### Contraste y apuestas de valor
+
+- **Opiniones del 1X2**: la mía (ganador, marcador opcional y nota, se ingresa en el partido), la
+  del modelo, **ESPN BPI** (solo NBA; los 50/50 exactos se tratan como "sin calcular") y **el
+  mercado**: las cuotas de Pinnacle (o el promedio de casas) sin margen, `(1/c) / Σ(1/c)`. En fútbol
+  no hay un pronóstico web gratis y legal: el predictor de ESPN no cubre fútbol, la API de ClubElo
+  está desactivada y el scraping de webs de pronósticos va contra sus términos.
+- Todas se guardan y se congelan al inicio del partido. La pestaña *Modelo* compara su acierto
+  ("Por opinión"); la mía no tiene Brier porque solo elige ganador.
+- **Valor**: EV = probabilidad del modelo × cuota de Betano − 1.
+  - **⚠️ Solo modelo**: EV ≥ 5 % y cuota ≤ 5,00.
+  - **✅ Confirmado**: además, el EV con la probabilidad del mercado es ≥ 0 %, es decir, la cuota de
+    Betano no es peor que el precio justo del mercado.
+  - Los tres umbrales se cambian en *Configuración*.
+- **Bitácora**: una apuesta registrada desde la cartelera (*Nueva apuesta → Desde la cartelera*)
+  guarda la probabilidad del modelo y la marca de valor, recalculada con la cuota que escribes (la de
+  Betano Chile). El *Resumen* y el Excel muestran el ROI por marca, incluidas las no colocadas.
+- **Backtest de valor** (pestaña *Modelo*, fútbol): con el historial 2024-25 + 2025-26 y 1 unidad
+  a la cuota promedio previa, la estrategia "solo modelo" hizo 840 apuestas con 28,8 % de acierto y
+  **ROI −15,9 %**, frente a −2,9 % de apostar siempre al favorito. Solo la Premier League quedó en
+  positivo (+3,6 %). El mercado sin margen acierta más que el modelo (53,3 % frente a 51,4 %, Brier
+  0,582 frente a 0,599), así que el valor "solo del modelo" es casi siempre desacuerdo con un mercado
+  que sabe más. Es una aproximación: no usa la cuota de Betano ni la confirmación del mercado.
+
+**El valor no es una garantía.** Es una estimación del modelo con cuotas de Betano UK; la prueba
+real es el ROI de la bitácora tras 100 apuestas o 3 meses.
 
 Límites: no conoce alineaciones, lesiones de fútbol, traspasos ni motivación; con muestra chica es
 poco fiable (se advierte en los factores). Una probabilidad del modelo no es una recomendación de

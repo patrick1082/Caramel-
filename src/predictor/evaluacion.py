@@ -9,11 +9,23 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 
 from predictor.ligas import FUENTES, ZONA_CHILE
-from predictor.modelos import Deporte, Prediccion, ResultadoHistorico
+from predictor.modelos import (
+    Deporte,
+    Fuente,
+    Ganador,
+    Prediccion,
+    PrediccionPropia,
+    Pronostico3,
+    ResultadoHistorico,
+)
 from predictor.nombres import emparejar
 from predictor.prediccion import ajustar
+from predictor.valor import POR_DEFECTO, Umbrales, ev
 
 TOTAL = "Total"
+PROPIA = "Mía"
+BASE = "Línea base"
+_INDICE = {Ganador.LOCAL: 0, Ganador.EMPATE: 1, Ganador.VISITANTE: 2}
 MINIMO_BACKTEST = 50  # partidos previos de la liga antes de empezar a predecir
 
 Probabilidades = tuple[float, float | None, float]  # local, empate (None en la NBA), visita
@@ -167,28 +179,101 @@ def por_liga(evaluadas: Iterable[Evaluada]) -> dict[str, MetricasModelo]:
     return metricas
 
 
+class _Buscador:
+    """Encuentra el resultado de un partido: misma liga, fecha ±1 día (Chile) y nombres."""
+
+    def __init__(self, historial: Iterable[ResultadoHistorico]):
+        self._por_fecha: dict[tuple[str, date], list[ResultadoHistorico]] = defaultdict(list)
+        for r in historial:
+            self._por_fecha[(r.liga, r.fecha)].append(r)
+
+    def resultado(
+        self, liga: str, local: str, visitante: str, inicio: datetime
+    ) -> ResultadoHistorico | None:
+        dia = inicio.astimezone(ZONA_CHILE).date()
+        candidatos = [
+            r for d in (-1, 0, 1) for r in self._por_fecha.get((liga, dia + timedelta(days=d)), [])
+        ]
+        for r in candidatos:
+            if emparejar(local, [c.local for c in candidatos]) != r.local:
+                continue
+            if emparejar(visitante, [c.visitante for c in candidatos]) != r.visitante:
+                continue
+            return r
+        return None
+
+
 def cruzar(
     predicciones: Iterable[Prediccion], historial: Sequence[ResultadoHistorico]
 ) -> list[Evaluada]:
     """Une cada predicción con su resultado: misma liga, fecha ±1 día (Chile) y nombres."""
-    por_fecha: dict[tuple[str, date], list[ResultadoHistorico]] = defaultdict(list)
-    for r in historial:
-        por_fecha[(r.liga, r.fecha)].append(r)
-    base = LineaBase(historial)
+    buscador, base = _Buscador(historial), LineaBase(historial)
     evaluadas = []
     for p in predicciones:
-        dia = p.inicio.astimezone(ZONA_CHILE).date()
-        candidatos = [
-            r for d in (-1, 0, 1) for r in por_fecha.get((p.liga, dia + timedelta(days=d)), [])
-        ]
-        for r in candidatos:
-            if emparejar(p.local, [c.local for c in candidatos]) != r.local:
-                continue
-            if emparejar(p.visitante, [c.visitante for c in candidatos]) != r.visitante:
-                continue
+        if r := buscador.resultado(p.liga, p.local, p.visitante, p.inicio):
             evaluadas.append(Evaluada(p, r, base.probabilidades(p.liga, r.fecha)))
-            break
     return evaluadas
+
+
+@dataclass
+class MetricasFuente:
+    partidos: int = 0
+    aciertos: int = 0
+    brier_suma: float | None = 0.0  # None si la fuente solo elige ganador (la propia)
+
+    @property
+    def acierto(self) -> float | None:
+        return self.aciertos / self.partidos if self.partidos else None
+
+    @property
+    def brier(self) -> float | None:
+        if self.brier_suma is None or not self.partidos:
+            return None
+        return self.brier_suma / self.partidos
+
+    def sumar(self, probs: Probabilidades | None, acierto: bool, desenlace: int) -> None:
+        self.partidos += 1
+        self.aciertos += acierto
+        if self.brier_suma is not None and probs is not None:
+            self.brier_suma += _brier(probs, desenlace)
+
+
+def por_fuente(
+    evaluadas: Iterable[Evaluada],
+    pronosticos: Iterable[Pronostico3],
+    propias: Iterable[PrediccionPropia],
+    historial: Sequence[ResultadoHistorico],
+) -> dict[str, MetricasFuente]:
+    """Acierto y Brier de cada opinión del 1X2 sobre los partidos ya jugados.
+
+    El modelo, el mercado y ESPN se miden en los partidos que el modelo predijo; la propia
+    se cruza con el historial por su cuenta. Solo se incluyen las fuentes con partidos.
+    """
+    evaluadas = list(evaluadas)
+    resultados = {e.prediccion.partido_id: e.resultado for e in evaluadas}
+    metricas = {
+        PROPIA: MetricasFuente(brier_suma=None),
+        **{f.etiqueta: MetricasFuente() for f in (Fuente.MODELO, Fuente.ESPN, Fuente.MERCADO)},
+        BASE: MetricasFuente(),
+    }
+
+    buscador = _Buscador(historial)
+    for propia in propias:
+        r = resultados.get(propia.partido_id) or buscador.resultado(
+            propia.liga, propia.local, propia.visitante, propia.inicio
+        )
+        if r is not None:
+            desenlace = _desenlace(r)
+            metricas[PROPIA].sumar(None, _INDICE[propia.ganador] == desenlace, desenlace)
+    for e in evaluadas:
+        metricas[Fuente.MODELO.etiqueta].sumar(e.probabilidades, e.acierto, e.desenlace)
+        metricas[BASE].sumar(e.base, _favorito(e.base) == e.desenlace, e.desenlace)
+    for p in pronosticos:
+        if p.fuente is Fuente.MODELO or (r := resultados.get(p.partido_id)) is None:
+            continue  # el modelo ya se midió con su predicción completa
+        probs, desenlace = (p.prob_local, p.prob_empate, p.prob_visitante), _desenlace(r)
+        metricas[p.fuente.etiqueta].sumar(probs, _favorito(probs) == desenlace, desenlace)
+    return {fuente: m for fuente, m in metricas.items() if m.partidos}
 
 
 def backtest(
@@ -228,3 +313,60 @@ def backtest(
                 evaluadas.append(Evaluada(prediccion, r, base.probabilidades(liga, fecha)))
         previos += len(del_dia)
     return evaluadas
+
+
+@dataclass
+class ResultadoValor:
+    """Apostar 1 unidad a la cuota previa (promedio de casas) cuando el modelo ve valor."""
+
+    partidos: int = 0  # partidos con predicción y cuotas
+    apuestas: int = 0
+    aciertos: int = 0
+    ganancia: float = 0.0
+    ganancia_favorito: float = 0.0  # comparación: apostar siempre a la cuota más baja
+
+    @property
+    def roi(self) -> float | None:
+        return self.ganancia / self.apuestas if self.apuestas else None
+
+    @property
+    def acierto(self) -> float | None:
+        return self.aciertos / self.apuestas if self.apuestas else None
+
+    @property
+    def roi_favorito(self) -> float | None:
+        return self.ganancia_favorito / self.partidos if self.partidos else None
+
+
+def backtest_valor(
+    evaluadas: Iterable[Evaluada], umbrales: Umbrales = POR_DEFECTO
+) -> dict[str, ResultadoValor]:
+    """Estrategia de valor sobre un backtest: por partido, la selección de mayor EV del modelo.
+
+    Solo cuentan los partidos con cuotas históricas (fútbol). Devuelve cada liga y `TOTAL`.
+    """
+    resultados: dict[str, ResultadoValor] = defaultdict(ResultadoValor)
+    for e in evaluadas:
+        if e.resultado.cuotas is None:
+            continue
+        cuotas, desenlace = e.resultado.cuotas, e.desenlace
+        for clave in (e.prediccion.liga, TOTAL):
+            resultado = resultados[clave]
+            resultado.partidos += 1
+            favorito = min(range(3), key=lambda i: cuotas[i])
+            resultado.ganancia_favorito += cuotas[favorito] - 1 if favorito == desenlace else -1
+            candidatas = [
+                (ev(p, cuotas[i]), i)
+                for i, p in enumerate(e.probabilidades)
+                if p is not None and cuotas[i] <= umbrales.cuota_maxima
+            ]
+            mejor = max(candidatas, default=None)
+            if mejor is None or mejor[0] < umbrales.modelo:
+                continue
+            resultado.apuestas += 1
+            if mejor[1] == desenlace:
+                resultado.aciertos += 1
+                resultado.ganancia += cuotas[mejor[1]] - 1
+            else:
+                resultado.ganancia -= 1
+    return {clave: resultados[clave] for clave in sorted(resultados, key=lambda c: (c == TOTAL, c))}

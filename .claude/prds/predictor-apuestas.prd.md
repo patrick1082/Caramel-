@@ -49,18 +49,18 @@ We'll know we're right when **el ROI de las apuestas filtradas por la app supera
 | 1 | Bitácora y fondo | El usuario registra apuestas, ve balances totales y exporta a Excel | complete | `.claude/plans/bitacora-y-fondo.plan.md` |
 | 2 | Partidos y cuotas | El usuario consulta partidos próximos (NBA + 5 ligas) con cuotas de Betano y proveedores de comparación | complete | `.claude/plans/partidos-y-cuotas.plan.md` |
 | 3 | Predicción IA | Cada partido muestra predicción con puntos/goles, jugadores y factores clave | complete | `.claude/plans/prediccion-ia.plan.md` |
-| 4 | Contraste y valor | El usuario ve su predicción vs. IA vs. pronósticos web, con apuestas de valor marcadas | pending | — |
+| 4 | Contraste y valor | El usuario ve su predicción vs. IA vs. pronósticos web, con apuestas de valor marcadas | complete | `.claude/plans/contraste-y-valor.plan.md` |
 | 5 | Gestión de stake | La app sugiere % de billetera por apuesta y lo registra en la bitácora | pending | — |
 
 ## Open Questions
 - [x] Formato de la app: app web local en Python + Streamlit.
 - [x] Fuentes de partidos y estadísticas: gratuitas (The Odds API 500 créditos/mes, football-data.co.uk, nba_api). Lesiones: pendiente para el hito 3.
 - [x] Acceso a cuotas: vía The Odds API (sin scraping). Betano Chile no está disponible; se usa Betano UK como aproximación y Pinnacle en lugar de Stake.
-- [ ] ¿Qué webs de pronósticos se usarán para el contraste?
+- [x] Webs de pronósticos para el contraste: ESPN BPI en la NBA y el mercado (Pinnacle sin margen) en todas las ligas. En fútbol no hay pronóstico web gratis y legal (ESPN no lo cubre, ClubElo desactivó su API y el scraping va contra los ToS).
 - [x] Moneda del fondo de 10.000: CLP.
 - [ ] Criterio para sugerir % de billetera (conservador vs. agresivo) y límites máximos por apuesta/día.
 - [x] Mercados a cubrir: ganador, hándicap y over/under. Props de jugadores fuera del plan gratuito.
-- [ ] Umbral para considerar una cuota "con valor".
+- [x] Umbral de "valor": EV del modelo ≥ 5 % con cuota ≤ 5,00 (⚠️ solo modelo) y, además, EV ≥ 0 % según el mercado (✅ confirmado). Configurables. En el backtest de fútbol 2025-26 "solo modelo" perdió (ROI −15,9 %).
 
 ## Risks
 | Risk | Likelihood | Impact | Mitigation |

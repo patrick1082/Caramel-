@@ -47,6 +47,9 @@ class Resumen:
     no_colocadas: Metricas
     por_deporte: dict[str, Metricas]
     por_liga: dict[str, Metricas]
+    # Hipótesis del PRD: ¿rinden las apuestas que la app marcó con valor? Incluye las no
+    # colocadas para juntar muestra antes.
+    por_valor: dict[str, Metricas]
 
     @property
     def ganancia(self) -> int:
@@ -199,4 +202,5 @@ class Bitacora:
             no_colocadas=calcular_metricas(a for a in apuestas if not a.colocada),
             por_deporte=_agrupar(colocadas, lambda a: a.deporte.value),
             por_liga=_agrupar(colocadas, lambda a: a.liga),
+            por_valor=_agrupar(apuestas, lambda a: a.valor.value),
         )

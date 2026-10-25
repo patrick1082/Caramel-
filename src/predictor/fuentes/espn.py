@@ -1,10 +1,12 @@
-"""Lesiones NBA y goleadores de fútbol desde la API pública (sin clave) de ESPN."""
+"""Lesiones NBA, goleadores de fútbol y BPI NBA desde la API pública (sin clave) de ESPN."""
 
 from __future__ import annotations
 
 import logging
 import re
 from collections.abc import Callable
+from datetime import date, datetime
+from typing import NamedTuple
 
 import requests
 
@@ -16,6 +18,7 @@ logger = logging.getLogger(__name__)
 URL_LESIONES_NBA = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries"
 URL_FUTBOL = "https://sports.core.api.espn.com/v2/sports/soccer/leagues/{codigo}/seasons/{anio}"
 URL_EQUIPOS = "https://site.api.espn.com/apis/site/v2/sports/soccer/{codigo}/teams"
+URL_NBA = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba"
 TIEMPO_ESPERA = 30  # segundos
 POR_CATEGORIA = 8  # líderes que se leen de goles y de asistencias
 
@@ -116,3 +119,52 @@ def goleadores(liga: str, anio: int, obtener: Obtener = requests.get) -> list[Ju
     jugadores.sort(key=lambda j: (-j.valor, j.nombre))
     logger.info("Goleadores %s %s: %s jugadores", liga, anio, len(jugadores))
     return jugadores
+
+
+class BpiNba(NamedTuple):
+    local: str
+    visitante: str
+    inicio: datetime
+    prob_local: float
+    prob_visitante: float
+
+
+def _prob_local(resumen: dict, id_local: str) -> float | None:
+    """Probabilidad de victoria del local según el "Matchup Predictor"; None si no es usable."""
+    predictor = resumen.get("predictor") or {}
+    for lado in ("homeTeam", "awayTeam"):  # se busca por id por si vienen invertidos
+        equipo = predictor.get(lado) or {}
+        if str(equipo.get("id")) != id_local:
+            continue
+        try:
+            prob = float(equipo["gameProjection"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        # 50/50 exacto es "sin calcular"; fuera de rango es un dato roto.
+        return prob / 100 if 0 <= prob <= 100 and prob != 50 else None
+    return None
+
+
+def bpi_nba(fecha: date, obtener: Obtener = requests.get) -> list[BpiNba]:
+    """Probabilidades BPI de los partidos de `fecha` (día de la NBA, hora de Nueva York)."""
+    datos = _json(f"{URL_NBA}/scoreboard?dates={fecha:%Y%m%d}", "partidos NBA", obtener)
+    pronosticos = []
+    for evento in datos.get("events", []):
+        competencia = (evento.get("competitions") or [{}])[0]
+        competidores = {c.get("homeAway"): c for c in competencia.get("competitors", [])}
+        local, visita = competidores.get("home"), competidores.get("away")
+        if not local or not visita or not str(evento.get("id", "")).isdigit():
+            continue
+        try:
+            inicio = datetime.fromisoformat(evento["date"])
+            resumen = _json(f"{URL_NBA}/summary?event={evento['id']}", "BPI NBA", obtener)
+        except (KeyError, TypeError, ValueError) as error:
+            logger.warning("BPI NBA sin datos para el evento %s: %s", evento.get("id"), error)
+            continue
+        prob = _prob_local(resumen, str(local.get("id")))
+        nombres = [(c.get("team") or {}).get("displayName") or "" for c in (local, visita)]
+        if prob is None or not all(n.strip() for n in nombres):
+            continue
+        pronosticos.append(BpiNba(nombres[0], nombres[1], inicio, prob, 1 - prob))
+    logger.info("BPI NBA %s: %s partidos", fecha, len(pronosticos))
+    return pronosticos

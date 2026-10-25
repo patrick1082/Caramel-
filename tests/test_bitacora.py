@@ -3,7 +3,7 @@ from decimal import Decimal
 import pytest
 
 from predictor.bitacora import FONDO_INICIAL_POR_DEFECTO, Metricas, calcular_resultado
-from predictor.modelos import Deporte, Estado, Movimiento, TipoMovimiento
+from predictor.modelos import Deporte, Estado, Movimiento, TipoMovimiento, Valor
 
 
 def test_saldo_inicial_es_el_fondo_por_defecto(bitacora):
@@ -195,3 +195,23 @@ def test_resumen_completo(bitacora, crear_apuesta):
     assert set(resumen.por_deporte) == {"NBA", "Futbol"}
     assert resumen.por_deporte["NBA"].resultado == 1_000
     assert resumen.por_liga["LaLiga"].resultado == -500
+
+
+def test_resumen_por_valor_incluye_las_no_colocadas(bitacora, crear_apuesta):
+    confirmada = bitacora.registrar_apuesta(
+        crear_apuesta(cuota=Decimal("2.10"), prob_modelo=0.55, valor=Valor.CONFIRMADO)
+    )
+    solo_modelo = bitacora.registrar_apuesta(
+        crear_apuesta(prob_modelo=0.6, valor=Valor.MODELO, colocada=False)
+    )
+    sin_valor = bitacora.registrar_apuesta(crear_apuesta())
+    bitacora.liquidar(confirmada.id, Estado.GANADA)
+    bitacora.liquidar(solo_modelo.id, Estado.PERDIDA)
+    bitacora.liquidar(sin_valor.id, Estado.GANADA)
+
+    por_valor = bitacora.resumen().por_valor
+
+    assert list(por_valor) == ["confirmado", "modelo", "ninguno"]
+    assert por_valor[Valor.CONFIRMADO].roi == pytest.approx(1.10)
+    assert por_valor[Valor.MODELO].roi == pytest.approx(-1.0)
+    assert por_valor[Valor.NINGUNO].resultado == 850

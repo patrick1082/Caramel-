@@ -43,6 +43,20 @@ LIGAS: dict[Deporte, tuple[str, ...]] = {
 }
 
 
+class Valor(StrEnum):
+    """Marca de valor de una cuota según el modelo y el mercado."""
+
+    NINGUNO = "ninguno"
+    MODELO = "modelo"  # Solo el modelo ve valor.
+    CONFIRMADO = "confirmado"  # El modelo ve valor y el mercado no lo contradice.
+
+    @property
+    def etiqueta(self) -> str:
+        return {"ninguno": "—", "modelo": "⚠️ Solo modelo", "confirmado": "✅ Confirmado"}[
+            self.value
+        ]
+
+
 def _validar_monto(monto: int) -> None:
     if not isinstance(monto, int) or isinstance(monto, bool):
         raise ValueError("El monto debe ser un número entero de CLP")
@@ -64,6 +78,8 @@ class Apuesta:
     casa: str = "Betano"
     prediccion_propia: str = ""
     nota: str = ""
+    prob_modelo: float | None = None  # Probabilidad del modelo al registrarla desde la cartelera.
+    valor: Valor = Valor.NINGUNO
     estado: Estado = Estado.PENDIENTE
     resultado_neto: int | None = None
     fecha_registro: datetime = field(default_factory=lambda: datetime.now().replace(microsecond=0))
@@ -72,9 +88,12 @@ class Apuesta:
     def __post_init__(self) -> None:
         self.deporte = Deporte(self.deporte)
         self.estado = Estado(self.estado)
+        self.valor = Valor(self.valor)
         self.cuota = Decimal(str(self.cuota))
 
         _validar_liga(self.deporte, self.liga)
+        if self.prob_modelo is not None and not 0 <= self.prob_modelo <= 1:
+            raise ValueError("La probabilidad del modelo debe estar entre 0 y 1")
         for nombre in ("partido", "mercado", "seleccion"):
             if not getattr(self, nombre).strip():
                 raise ValueError(f"El campo '{nombre}' es obligatorio")
@@ -167,10 +186,14 @@ class ResultadoHistorico:
     marcador_visitante: int
     # Estadística → (valor del local, valor del visitante), p. ej. {"tiros": (14, 9)}.
     extras: dict[str, tuple[float, float]] = field(default_factory=dict)
+    # Cuotas promedio previas al partido (local, empate, visitante); solo fútbol.
+    cuotas: tuple[float, float, float] | None = None
 
     def __post_init__(self) -> None:
         if self.marcador_local < 0 or self.marcador_visitante < 0:
             raise ValueError("El marcador no puede ser negativo")
+        if self.cuotas is not None and any(c <= 1 for c in self.cuotas):
+            raise ValueError("Las cuotas históricas deben ser mayores a 1.00")
 
 
 class Rol(StrEnum):
@@ -210,6 +233,12 @@ class ProbabilidadLinea:
 _TOLERANCIA = 0.01
 
 
+def _validar_probabilidades(local: float, empate: float | None, visitante: float) -> None:
+    probs = [local, visitante] + ([empate] if empate is not None else [])
+    if any(not 0 <= p <= 1 for p in probs) or abs(sum(probs) - 1) > _TOLERANCIA:
+        raise ValueError("Las probabilidades deben estar entre 0 y 1 y sumar 1")
+
+
 @dataclass
 class Prediccion:
     partido_id: str
@@ -234,11 +263,7 @@ class Prediccion:
             raise ValueError("Las fechas de la predicción deben tener zona horaria")
         if self.esperado_local < 0 or self.esperado_visitante < 0:
             raise ValueError("Los goles o puntos esperados no pueden ser negativos")
-        probs = [self.prob_local, self.prob_visitante] + (
-            [self.prob_empate] if self.prob_empate is not None else []
-        )
-        if any(not 0 <= p <= 1 for p in probs) or abs(sum(probs) - 1) > _TOLERANCIA:
-            raise ValueError("Las probabilidades deben estar entre 0 y 1 y sumar 1")
+        _validar_probabilidades(self.prob_local, self.prob_empate, self.prob_visitante)
 
     @property
     def total_esperado(self) -> float:
@@ -252,3 +277,84 @@ class Prediccion:
             if p.mercado is Mercado.TOTALES and p.seleccion == "Over" and principal:
                 return p.prob
         return None
+
+
+class Ganador(StrEnum):
+    LOCAL = "local"
+    EMPATE = "empate"
+    VISITANTE = "visitante"
+
+
+@dataclass
+class PrediccionPropia:
+    """Lo que piensa el usuario de un partido; se congela al inicio."""
+
+    partido_id: str
+    liga: str
+    local: str
+    visitante: str
+    inicio: datetime
+    ganador: Ganador
+    creada: datetime
+    marcador_local: int | None = None
+    marcador_visitante: int | None = None
+    nota: str = ""
+
+    def __post_init__(self) -> None:
+        self.ganador = Ganador(self.ganador)
+        if self.inicio.tzinfo is None or self.creada.tzinfo is None:
+            raise ValueError("Las fechas de la predicción deben tener zona horaria")
+        if self.liga in LIGAS[Deporte.NBA] and self.ganador is Ganador.EMPATE:
+            raise ValueError("En la NBA no hay empate")
+        marcador = (self.marcador_local, self.marcador_visitante)
+        if marcador.count(None) == 1:
+            raise ValueError("El marcador necesita los dos valores o ninguno")
+        if None not in marcador:
+            local, visitante = marcador
+            if local < 0 or visitante < 0:
+                raise ValueError("El marcador no puede ser negativo")
+            if self.ganador is not _ganador_de(local, visitante):
+                raise ValueError("El marcador no coincide con el ganador elegido")
+
+
+def _ganador_de(local: int, visitante: int) -> Ganador:
+    if local > visitante:
+        return Ganador.LOCAL
+    return Ganador.VISITANTE if visitante > local else Ganador.EMPATE
+
+
+class Fuente(StrEnum):
+    """Origen de un pronóstico 1X2 externo o del modelo."""
+
+    MODELO = "modelo"
+    MERCADO = "mercado"  # Pinnacle sin margen (o el promedio de las casas).
+    ESPN = "espn"  # ESPN BPI, solo NBA.
+
+    @property
+    def etiqueta(self) -> str:
+        return {"modelo": "Modelo", "mercado": "Mercado", "espn": "ESPN BPI"}[self.value]
+
+
+@dataclass
+class Pronostico3:
+    """Probabilidades de local, empate y visitante según una fuente."""
+
+    partido_id: str
+    fuente: Fuente
+    prob_local: float
+    prob_empate: float | None  # None en la NBA
+    prob_visitante: float
+    actualizada: datetime
+
+    def __post_init__(self) -> None:
+        self.fuente = Fuente(self.fuente)
+        if self.actualizada.tzinfo is None:
+            raise ValueError("La fecha del pronóstico debe tener zona horaria")
+        _validar_probabilidades(self.prob_local, self.prob_empate, self.prob_visitante)
+
+    @property
+    def favorito(self) -> Ganador:
+        probs = {Ganador.LOCAL: self.prob_local, Ganador.VISITANTE: self.prob_visitante}
+        if self.prob_empate is not None:
+            probs[Ganador.EMPATE] = self.prob_empate
+        return max(probs, key=probs.__getitem__)
