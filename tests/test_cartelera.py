@@ -469,6 +469,28 @@ def test_valorar_y_valor_del_dia_respetan_los_umbrales(cartelera_nba, reloj):
     assert cartelera_nba.valor_del_dia(partidos) == []
 
 
+def test_sugeridas_da_a_lo_sumo_una_apuesta_probable_por_partido(cartelera_nba, reloj):
+    partidos = cartelera_nba.partidos(date(2026, 10, 23))
+
+    sugeridas = cartelera_nba.sugeridas(partidos, minimo=0.0)
+
+    ids = [s.partido.id for s in sugeridas]
+    assert ids and len(ids) == len(set(ids)) and set(ids) <= {p.id for p in partidos}
+    assert all(s.prob >= 0.55 for s in cartelera_nba.sugeridas(partidos))
+    assert [s.partido.inicio for s in sugeridas] == sorted(s.partido.inicio for s in sugeridas)
+    for s in sugeridas:
+        assert s.cuota == (s.valoracion.fila.betano or s.valoracion.fila.promedio)
+        assert s.de_betano == (s.valoracion.fila.betano is not None)
+        assert s.ev == pytest.approx(s.prob * float(s.cuota) - 1)
+    assert cartelera_nba.sugeridas(partidos, minimo=0.999) == []
+    assert cartelera_nba.apuestas_del_dia(partidos) == (
+        cartelera_nba.valor_del_dia(partidos),
+        cartelera_nba.sugeridas(partidos),
+    )
+    reloj.momento = datetime(2026, 10, 24, tzinfo=UTC)  # ya empezaron todos
+    assert cartelera_nba.sugeridas(partidos, minimo=0.0) == []
+
+
 def test_prediccion_propia_se_reemplaza_y_se_congela_al_inicio(cartelera_nba, reloj):
     partido = _bucks_bulls(cartelera_nba)
     assert cartelera_nba.prediccion_propia(partido) is None

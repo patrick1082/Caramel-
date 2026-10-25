@@ -143,3 +143,28 @@ def valorar(
             )
         )
     return valoraciones
+
+
+PROB_SUGERIDA = 0.55  # Acierto estimado mínimo de una apuesta sugerida.
+
+
+def prob_estimada(valoracion: Valoracion) -> float | None:
+    """Promedio del modelo y del mercado (Pinnacle sin margen); si falta uno, el otro."""
+    probs = [p for p in (valoracion.prob_modelo, valoracion.prob_mercado) if p is not None]
+    return sum(probs) / len(probs) if probs else None
+
+
+def sugerir(
+    valoraciones: Sequence[Valoracion], minimo: float = PROB_SUGERIDA
+) -> tuple[Valoracion, float] | None:
+    """Entre las apuestas con acierto estimado ≥ `minimo`, la de mayor EV estimado."""
+    candidatas = []
+    for valoracion in valoraciones:
+        prob = prob_estimada(valoracion)
+        if prob is not None and prob >= minimo:
+            cuota = valoracion.fila.betano or valoracion.fila.promedio
+            candidatas.append((ev(prob, cuota), prob, valoracion))
+    if not candidatas:
+        return None
+    _, prob, valoracion = max(candidatas, key=lambda c: (c[0], c[1]))
+    return valoracion, prob

@@ -7,11 +7,14 @@ from predictor.cartelera import FilaComparacion
 from predictor.modelos import Mercado, Prediccion, ProbabilidadLinea, Valor
 from predictor.valor import (
     Umbrales,
+    Valoracion,
     clasificar,
     ev,
+    prob_estimada,
     prob_modelo,
     probabilidades_mercado,
     sin_margen,
+    sugerir,
     valorar,
 )
 
@@ -179,3 +182,34 @@ def test_valorar_sin_prediccion_solo_muestra_el_mercado():
 
     assert {v.valor for v in valoraciones} == {Valor.NINGUNO}
     assert valoraciones[2].prob_mercado == pytest.approx(0.4054, abs=1e-4)
+
+
+def _valoracion(fila, modelo, mercado):
+    return Valoracion(fila, modelo, mercado, None, Valor.NINGUNO)
+
+
+def test_prob_estimada_promedia_modelo_y_mercado():
+    fila = _fila("h2h", LOCAL, 2.0, 2.1)
+    assert prob_estimada(_valoracion(fila, 0.6, 0.5)) == pytest.approx(0.55)
+    assert prob_estimada(_valoracion(fila, None, 0.5)) == 0.5
+    assert prob_estimada(_valoracion(fila, 0.7, None)) == 0.7
+    assert prob_estimada(_valoracion(fila, None, None)) is None
+
+
+def test_sugerir_elige_el_mejor_ev_entre_las_probables():
+    favorito = _valoracion(_fila("h2h", LOCAL, 1.30, 1.32), 0.80, 0.76)  # EV -1,4 %
+    over = _valoracion(_fila("totals", "Over", 1.95, 2.0, linea=2.5), 0.58, 0.56)  # EV +11 %
+    improbable = _valoracion(_fila("h2h", VISITA, 5.0, 5.2), 0.30, 0.20)  # gran EV, poco probable
+    sin_betano = _valoracion(_fila("totals", "Under", None, 1.9, linea=2.5), 0.50, 0.50)
+
+    valoracion, prob = sugerir([favorito, over, improbable, sin_betano])
+
+    assert valoracion is over and prob == pytest.approx(0.57)
+    assert sugerir([favorito, improbable]) == (favorito, pytest.approx(0.78))
+    assert sugerir([improbable, sin_betano]) is None
+    assert sugerir([favorito], minimo=0.9) is None
+
+
+def test_sugerir_usa_el_promedio_si_betano_no_ofrece_la_cuota():
+    sin_betano = _valoracion(_fila("h2h", LOCAL, None, 1.9, promedio=1.85), 0.6, 0.56)
+    assert sugerir([sin_betano]) == (sin_betano, pytest.approx(0.58))

@@ -219,7 +219,7 @@ def test_apuesta_guarda_probabilidad_y_marca_de_valor(crear_apuesta):
     apuesta = crear_apuesta(prob_modelo=0.55, valor="confirmado")
 
     assert apuesta.valor is Valor.CONFIRMADO
-    assert Valor.MODELO.etiqueta == "⚠️ Solo modelo"
+    assert Valor.MODELO.etiqueta == "Solo modelo"
     assert crear_apuesta().valor is Valor.NINGUNO
     with pytest.raises(ValueError, match="entre 0 y 1"):
         crear_apuesta(prob_modelo=1.2)

@@ -19,6 +19,12 @@ justa en cada línea), figuras y bajas, y factores clave. Las predicciones se gu
 modelo, ESPN BPI (NBA) y el mercado; la tabla de cuotas marca las apuestas con valor, la pestaña
 *Partidos* lista el "Valor del día" y el *Resumen* compara el ROI con y sin valor.
 
+**Apuestas sugeridas**: debajo del "Valor del día", una apuesta por partido por empezar (si existe)
+con acierto estimado de 55 % o más, escrita en palabras ("Gana Arsenal", "Más de 2.5 goles",
+"Lakers -4.5"). El acierto estimado promedia el modelo y el mercado (Pinnacle sin margen); entre
+las que pasan el umbral se elige la de mayor EV. Probable no es lo mismo que rentable: un EV
+negativo indica que la cuota paga menos de lo que vale el riesgo.
+
 ## Instalación
 
 ```bash
@@ -28,15 +34,21 @@ python -m venv .venv
 
 ## Uso
 
+Es una aplicación de escritorio (Qt, tema oscuro):
+
 ```bash
-.venv/Scripts/python -m streamlit run app.py
+.venv/Scripts/predictor          # o: .venv/Scripts/python -m predictor.escritorio
 ```
+
+La barra lateral lleva a cada página (Partidos, Modelo, Resumen, Nueva apuesta, Pendientes,
+Historial, Movimientos, Configuración), muestra el saldo y exporta la bitácora a Excel. Las
+descargas (*Actualizar*, backtest) corren en segundo plano sin congelar la ventana.
 
 Los datos se guardan en `data/bitacora.db` (SQLite). Para usar otra ubicación —recomendado si la
 carpeta del proyecto está en OneDrive— define la variable `PREDICTOR_DB`:
 
 ```powershell
-$env:PREDICTOR_DB = "E:\datos\bitacora.db"; .venv\Scripts\python -m streamlit run app.py
+$env:PREDICTOR_DB = "E:\datos\bitacora.db"; .venv\Scripts\predictor
 ```
 
 ### Fuentes de partidos y cuotas
@@ -61,10 +73,12 @@ $env:PREDICTOR_DB = "E:\datos\bitacora.db"; .venv\Scripts\python -m streamlit ru
   solo se muestran goleadores y asistidores. Los endpoints de ESPN no son oficiales y pueden cambiar.
 
 La clave de The Odds API se lee de la variable de entorno `ODDS_API_KEY`; nunca se guarda en la
-base de datos ni en el repositorio. Sin clave, la app muestra las cuotas ya guardadas.
+base de datos ni en el repositorio. **Sin clave no aparece ningún partido**: la cartelera viene solo
+de esa API, y el botón Actualizar descarga únicamente el historial, los jugadores y el ESPN BPI.
+Para dejarla guardada en tu usuario de Windows (una vez; luego abre la app de nuevo):
 
 ```powershell
-$env:ODDS_API_KEY = "tu-clave"; .venv\Scripts\python -m streamlit run app.py
+setx ODDS_API_KEY "tu-clave"
 ```
 
 ### Modelo de predicción
@@ -105,8 +119,8 @@ y cada partido pesa según su antigüedad (vida media de 180 días).
 - Todas se guardan y se congelan al inicio del partido. La pestaña *Modelo* compara su acierto
   ("Por opinión"); la mía no tiene Brier porque solo elige ganador.
 - **Valor**: EV = probabilidad del modelo × cuota de Betano − 1.
-  - **⚠️ Solo modelo**: EV ≥ 5 % y cuota ≤ 5,00.
-  - **✅ Confirmado**: además, el EV con la probabilidad del mercado es ≥ 0 %, es decir, la cuota de
+  - **Solo modelo**: EV ≥ 5 % y cuota ≤ 5,00.
+  - **Confirmado**: además, el EV con la probabilidad del mercado es ≥ 0 %, es decir, la cuota de
     Betano no es peor que el precio justo del mercado.
   - Los tres umbrales se cambian en *Configuración*.
 - **Bitácora**: una apuesta registrada desde la cartelera (*Nueva apuesta → Desde la cartelera*)

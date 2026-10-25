@@ -7,17 +7,19 @@ from io import BytesIO
 import pandas as pd
 
 from predictor.bitacora import Metricas, Resumen
-from predictor.cartelera import Analisis, FilaComparacion, Oportunidad
+from predictor.cartelera import Analisis, FilaComparacion, Oportunidad, Sugerencia
 from predictor.estadisticas import Estadisticas, Promedios
 from predictor.evaluacion import TOTAL, Evaluada, MetricasFuente, MetricasModelo, ResultadoValor
 from predictor.ligas import ZONA_CHILE
 from predictor.modelos import (
     Apuesta,
+    Deporte,
     Fuente,
     Ganador,
     Jugador,
     Mercado,
     Movimiento,
+    Partido,
     Prediccion,
     PrediccionPropia,
     Pronostico3,
@@ -104,6 +106,19 @@ COLUMNAS_VALOR_DEL_DIA = (
     "Mercado (%)",
     "EV (%)",
     "Valor",
+)
+
+COLUMNAS_SUGERIDAS = (
+    "Hora",
+    "Liga",
+    "Partido",
+    "Apuesta",
+    "Cuota",
+    "Casa",
+    "Acierto estimado (%)",
+    "Modelo (%)",
+    "Mercado (%)",
+    "EV estimado (%)",
 )
 
 COLUMNAS_CONTRASTE = ("Opinión", "Local (%)", "Empate (%)", "Visita (%)", "Favorito", "Marcador")
@@ -304,6 +319,36 @@ def tabla_valor_del_dia(oportunidades: list[Oportunidad]) -> pd.DataFrame:
         for o in oportunidades
     ]
     return pd.DataFrame(filas, columns=COLUMNAS_VALOR_DEL_DIA)
+
+
+def describir_apuesta(partido: Partido, fila: FilaComparacion) -> str:
+    """La apuesta en palabras: "Gana Arsenal", "Más de 2.5 goles", "Lakers -4.5"."""
+    if fila.mercado is Mercado.GANADOR:
+        return "Empate" if fila.seleccion == "Draw" else f"Gana {fila.seleccion}"
+    if fila.mercado is Mercado.TOTALES:
+        unidad = "puntos" if partido.deporte is Deporte.NBA else "goles"
+        sentido = "Más" if fila.seleccion == "Over" else "Menos"
+        return f"{sentido} de {fila.linea:g} {unidad}"
+    return f"{fila.seleccion} {_linea(fila)}"
+
+
+def tabla_sugeridas(sugerencias: list[Sugerencia]) -> pd.DataFrame:
+    filas = [
+        (
+            s.partido.inicio.astimezone(ZONA_CHILE).strftime("%H:%M"),
+            s.partido.liga,
+            s.partido.nombre,
+            describir_apuesta(s.partido, s.valoracion.fila),
+            _cuota(s.cuota),
+            "Betano" if s.de_betano else "Promedio",
+            _porcentaje(s.prob),
+            _porcentaje(s.valoracion.prob_modelo),
+            _porcentaje(s.valoracion.prob_mercado),
+            _porcentaje(s.ev),
+        )
+        for s in sugerencias
+    ]
+    return pd.DataFrame(filas, columns=COLUMNAS_SUGERIDAS)
 
 
 _FUENTES_CONTRASTE = {

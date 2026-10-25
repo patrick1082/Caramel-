@@ -101,6 +101,28 @@ class Oportunidad:
     valoracion: Valoracion
 
 
+@dataclass(frozen=True)
+class Sugerencia:
+    """Apuesta sugerida de un partido: la de mejor EV entre las de acierto estimado alto."""
+
+    partido: Partido
+    valoracion: Valoracion
+    prob: float  # acierto estimado (modelo y mercado)
+
+    @property
+    def de_betano(self) -> bool:
+        return self.valoracion.fila.betano is not None
+
+    @property
+    def cuota(self) -> Decimal:
+        """La de Betano o, si Betano no la ofrece, el promedio de las casas."""
+        return self.valoracion.fila.betano or self.valoracion.fila.promedio
+
+    @property
+    def ev(self) -> float:
+        return valor.ev(self.prob, self.cuota)
+
+
 def descargar_jugadores(liga: str, hoy: date) -> list[Jugador]:
     """Figuras de la temporada en curso: nba_api + lesiones de ESPN, o goleadores de ESPN."""
     deporte = FUENTES[liga].deporte
@@ -175,6 +197,26 @@ def _pronostico_mercado(
     local, *medio, visitante = (probs[clave] for clave in claves)
     empate = medio[0] if medio else None
     return Pronostico3(partido.id, Fuente.MERCADO, local, empate, visitante, ahora)
+
+
+def _con_valor(valoradas: list[tuple[Partido, list[Valoracion]]]) -> list[Oportunidad]:
+    oportunidades = [
+        Oportunidad(partido, v)
+        for partido, valoraciones in valoradas
+        for v in valoraciones
+        if v.valor is not Valor.NINGUNO
+    ]
+    return sorted(oportunidades, key=lambda o: -(o.valoracion.ev or 0))
+
+
+def _sugeridas(
+    valoradas: list[tuple[Partido, list[Valoracion]]], minimo: float
+) -> list[Sugerencia]:
+    sugerencias = []
+    for partido, valoraciones in valoradas:
+        if (elegida := valor.sugerir(valoraciones, minimo)) is not None:
+            sugerencias.append(Sugerencia(partido, *elegida))
+    return sorted(sugerencias, key=lambda s: (s.partido.inicio, -s.prob))
 
 
 class Cartelera:
@@ -518,16 +560,29 @@ class Cartelera:
         """Probabilidad del modelo y del mercado, EV y marca de valor de cada fila de cuotas."""
         return valor.valorar(self.comparar(partido), prediccion, partido.local, self.umbrales)
 
+    def _por_empezar(self, partidos: Iterable[Partido]) -> list[tuple[Partido, list[Valoracion]]]:
+        return [
+            (partido, self.valorar(partido, self.predecir(partido)))
+            for partido in partidos
+            if self._reloj() < partido.inicio
+        ]
+
     def valor_del_dia(self, partidos: Iterable[Partido]) -> list[Oportunidad]:
         """Cuotas de Betano con valor en los partidos que todavía no empiezan, por EV."""
-        oportunidades = []
-        for partido in partidos:
-            if self._reloj() >= partido.inicio:
-                continue
-            for valoracion in self.valorar(partido, self.predecir(partido)):
-                if valoracion.valor is not Valor.NINGUNO:
-                    oportunidades.append(Oportunidad(partido, valoracion))
-        return sorted(oportunidades, key=lambda o: -(o.valoracion.ev or 0))
+        return _con_valor(self._por_empezar(partidos))
+
+    def sugeridas(
+        self, partidos: Iterable[Partido], minimo: float = valor.PROB_SUGERIDA
+    ) -> list[Sugerencia]:
+        """Hasta una apuesta por partido por empezar con acierto estimado ≥ `minimo`."""
+        return _sugeridas(self._por_empezar(partidos), minimo)
+
+    def apuestas_del_dia(
+        self, partidos: Iterable[Partido]
+    ) -> tuple[list[Oportunidad], list[Sugerencia]]:
+        """Valor del día y apuestas sugeridas, prediciendo cada partido una sola vez."""
+        valoradas = self._por_empezar(partidos)
+        return _con_valor(valoradas), _sugeridas(valoradas, valor.PROB_SUGERIDA)
 
     def prediccion_propia(self, partido: Partido) -> PrediccionPropia | None:
         return self._repo.obtener_prediccion_propia(partido.id)

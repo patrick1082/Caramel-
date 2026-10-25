@@ -4,13 +4,14 @@ from io import BytesIO
 
 from openpyxl import load_workbook
 
-from predictor.cartelera import Analisis, FilaComparacion, Oportunidad
+from predictor.cartelera import Analisis, FilaComparacion, Oportunidad, Sugerencia
 from predictor.estadisticas import calcular
 from predictor.evaluacion import TOTAL, MetricasFuente, ResultadoValor, cruzar, por_liga
 from predictor.exportar import (
     COLUMNAS_APUESTAS,
     COLUMNAS_MOVIMIENTOS,
     COLUMNAS_PREDICCIONES,
+    describir_apuesta,
     exportar_excel,
     resumen_contraste,
     tabla_backtest_valor,
@@ -22,6 +23,7 @@ from predictor.exportar import (
     tabla_fuentes,
     tabla_jugadores,
     tabla_predicciones,
+    tabla_sugeridas,
     tabla_valor_del_dia,
 )
 from predictor.ligas import ZONA_CHILE
@@ -73,8 +75,8 @@ def test_exporta_valor_de_las_apuestas_y_contraste(bitacora, crear_apuesta):
 
     apuestas = _filas(libro["Apuestas"])
     fila = dict(zip(apuestas[0], apuestas[1], strict=True))
-    assert fila["Modelo (%)"] == 60.0 and fila["Valor"] == "✅ Confirmado"
-    assert any(f[0] == "Valor: ✅ Confirmado" for f in _filas(libro["Resumen"]))
+    assert fila["Modelo (%)"] == 60.0 and fila["Valor"] == "Confirmado"
+    assert any(f[0] == "Valor: Confirmado" for f in _filas(libro["Resumen"]))
     assert _filas(libro["Contraste"])[1] == ("Modelo", 2, 50.0, 0.6)
 
 
@@ -294,7 +296,7 @@ def test_tabla_cuotas_con_valoraciones():
     prediccion = _prediccion()
     tabla = tabla_cuotas(FILAS_1X2, prediccion, valorar(FILAS_1X2, prediccion, "Arsenal"))
 
-    assert tabla["Valor"].tolist()[0] == "✅ Confirmado"  # 0,5 × 2,30 = EV +15 %
+    assert tabla["Valor"].tolist()[0] == "Confirmado"  # 0,5 × 2,30 = EV +15 %
     assert tabla["EV (%)"].tolist()[0] == 15.0
     assert tabla["Mercado (%)"].notna().all()
     assert tabla["Valor"].tolist()[1:] == ["—", "—"]
@@ -312,7 +314,7 @@ def test_tabla_valor_del_dia():
         "Arsenal vs Everton",
         "Arsenal",
     )
-    assert (fila["Betano"], fila["EV (%)"], fila["Valor"]) == (2.3, 15.0, "✅ Confirmado")
+    assert (fila["Betano"], fila["EV (%)"], fila["Valor"]) == (2.3, 15.0, "Confirmado")
 
 
 def _pronostico(fuente, local, empate, visita):
@@ -381,3 +383,39 @@ def test_tabla_fuentes_y_backtest_valor():
 
     assert fuentes.iloc[0].tolist()[:3] == ["Mía", 4, 75.0] and fuentes["Brier"].isna().all()
     assert backtest.iloc[0].tolist() == [TOTAL, 10, 4, 25.0, -37.5, 5.0]
+
+
+def test_describir_apuesta_en_palabras():
+    futbol = Partido("p1", Deporte.FUTBOL, "Premier League", "Arsenal", "Everton", INICIO)
+    nba = Partido("n1", Deporte.NBA, "NBA", "Lakers", "Celtics", INICIO)
+    over = FilaComparacion(
+        Mercado.TOTALES, "Over", Decimal("2.5"), None, None, Decimal(2), "x", Decimal(2), 1
+    )
+    under = FilaComparacion(
+        Mercado.TOTALES, "Under", Decimal("221.5"), None, None, Decimal(2), "x", Decimal(2), 1
+    )
+    handicap = FilaComparacion(
+        Mercado.HANDICAP, "Lakers", Decimal("-4.5"), None, None, Decimal(2), "x", Decimal(2), 1
+    )
+
+    assert describir_apuesta(futbol, FILAS_1X2[0]) == "Gana Arsenal"
+    assert describir_apuesta(futbol, FILAS_1X2[1]) == "Empate"
+    assert describir_apuesta(futbol, over) == "Más de 2.5 goles"
+    assert describir_apuesta(nba, under) == "Menos de 221.5 puntos"
+    assert describir_apuesta(nba, handicap) == "Lakers -4.5"
+
+
+def test_tabla_sugeridas():
+    partido = Partido("p1", Deporte.FUTBOL, "Premier League", "Arsenal", "Everton", INICIO)
+    valoracion = valorar(FILAS_1X2, _prediccion(), "Arsenal")[0]
+
+    tabla = tabla_sugeridas([Sugerencia(partido, valoracion, 0.5)])
+
+    fila = tabla.iloc[0]
+    assert (fila["Hora"], fila["Apuesta"], fila["Cuota"], fila["Casa"]) == (
+        "16:00",
+        "Gana Arsenal",
+        2.3,
+        "Betano",
+    )
+    assert (fila["Acierto estimado (%)"], fila["EV estimado (%)"]) == (50.0, 15.0)

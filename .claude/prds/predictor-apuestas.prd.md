@@ -50,7 +50,7 @@ We'll know we're right when **el ROI de las apuestas filtradas por la app supera
 | 2 | Partidos y cuotas | El usuario consulta partidos próximos (NBA + 5 ligas) con cuotas de Betano y proveedores de comparación | complete | `.claude/plans/partidos-y-cuotas.plan.md` |
 | 3 | Predicción IA | Cada partido muestra predicción con puntos/goles, jugadores y factores clave | complete | `.claude/plans/prediccion-ia.plan.md` |
 | 4 | Contraste y valor | El usuario ve su predicción vs. IA vs. pronósticos web, con apuestas de valor marcadas | complete | `.claude/plans/contraste-y-valor.plan.md` |
-| 5 | Gestión de stake | La app sugiere % de billetera por apuesta y lo registra en la bitácora | pending | — |
+| 5 | Gestión de stake | La app sugiere % de billetera por apuesta y lo registra en la bitácora | in-progress | `.claude/plans/gestion-de-stake.plan.md` |
 
 ## Open Questions
 - [x] Formato de la app: app web local en Python + Streamlit.

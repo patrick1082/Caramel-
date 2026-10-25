@@ -396,7 +396,7 @@ def _fila_a_movimiento(fila: sqlite3.Row) -> Movimiento:
 
 class Repositorio:
     def __init__(self, ruta: str | Path) -> None:
-        # Streamlit atiende cada sesión en su propio hilo y comparte este recurso.
+        # La app de escritorio descarga en un hilo aparte mientras la ventana espera.
         self._con = sqlite3.connect(ruta, check_same_thread=False)
         self._con.row_factory = sqlite3.Row
         self._migrar()

@@ -52,9 +52,7 @@ class Valor(StrEnum):
 
     @property
     def etiqueta(self) -> str:
-        return {"ninguno": "—", "modelo": "⚠️ Solo modelo", "confirmado": "✅ Confirmado"}[
-            self.value
-        ]
+        return {"ninguno": "—", "modelo": "Solo modelo", "confirmado": "Confirmado"}[self.value]
 
 
 def _validar_monto(monto: int) -> None:
